@@ -4,6 +4,9 @@
   "workspaces": {
     "": {
       "name": "@eleno/pi-codemode-loadout",
+      "dependencies": {
+        "@earendil-works/pi-codemode": "1.1.0",
+      },
       "devDependencies": {
         "@earendil-works/pi-coding-agent": "1.1.0",
         "@types/bun": "latest",

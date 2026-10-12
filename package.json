@@ -62,5 +62,8 @@
     "extensions": [
       "./src/index.ts"
     ]
+  },
+  "dependencies": {
+    "@earendil-works/pi-codemode": "1.1.0"
   }
 }

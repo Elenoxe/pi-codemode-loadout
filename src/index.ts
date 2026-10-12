@@ -1,5 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { isNativeConfig, loadConfig, type CatalogConfig } from "./config"
+import { createCatalog } from "./catalog"
 
 /** Replay declaration deltas; replace only the declaration that is currently effective. */
 export function updateCodemodeDescription(
@@ -21,5 +23,25 @@ export function updateCodemodeDescription(
 }
 
 export default function codemodeToolCatalog(pi: ExtensionAPI): void {
-  pi.on("context_with_system", () => undefined)
+  let config: CatalogConfig | undefined
+  pi.on("session_start", (_event, ctx) => {
+    config = loadConfig(getAgentDir(), ctx.cwd, ctx.isProjectTrusted())
+  })
+  pi.on("context_with_system", (event, ctx) => {
+    config ??= loadConfig(getAgentDir(), ctx.cwd, ctx.isProjectTrusted())
+    if (isNativeConfig(config)) return
+    const settings = pi.getSettings().codemode
+    const budget = settings?.inlineBudget
+    return {
+      messages: updateCodemodeDescription(event.messages, (description) =>
+        createCatalog(description, config!, {
+          tools: pi.getAllTools(),
+          active: new Set(pi.getActiveTools()),
+          mode: settings?.mode === "only" ? "only" : "on",
+          inlineBudget:
+            typeof budget === "number" && Number.isFinite(budget) && budget >= 0 ? budget : 3000,
+        }),
+      ),
+    }
+  })
 }
