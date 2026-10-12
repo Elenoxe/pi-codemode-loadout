@@ -131,6 +131,7 @@ interface Entry {
   rule: ToolRule | undefined
   texts: Record<DisplayLevel, string>
   preferred: DisplayLevel
+  minimum?: DisplayLevel
 }
 export function sectionCost(text: string): number {
   return Math.ceil(text.length / 4)
@@ -138,6 +139,12 @@ export function sectionCost(text: string): number {
 function allocate(entries: Entry[], budget: number): Map<string, string> {
   const shown = new Map<string, string>()
   let remaining = budget
+  for (const entry of entries) {
+    if (!entry.minimum) continue
+    shown.set(entry.tool.name, entry.texts[entry.minimum])
+    remaining -= sectionCost(entry.texts[entry.minimum])
+  }
+  if (remaining < 0) return shown
   const priorities = [...new Set(entries.map((entry) => entry.rule?.priority ?? 0))].sort(
     (a, b) => b - a,
   )
@@ -160,10 +167,13 @@ function allocate(entries: Entry[], budget: number): Map<string, string> {
         if (!entry) continue
         const levels: DisplayLevel[] =
           entry.rule?.level === "auto" ? ["full", "hint", "name"] : [entry.preferred]
-        const level = levels.find((level) => sectionCost(entry.texts[level]) <= remaining)
+        const reserved = entry.minimum ? sectionCost(entry.texts[entry.minimum]) : 0
+        const level = levels.find(
+          (level) => sectionCost(entry.texts[level]) - reserved <= remaining,
+        )
         if (level) {
           shown.set(entry.tool.name, entry.texts[level])
-          remaining -= sectionCost(entry.texts[level])
+          remaining -= sectionCost(entry.texts[level]) - reserved
         }
       }
     }
@@ -183,6 +193,13 @@ export function createCatalog(
     return {
       tool,
       rule,
+      minimum: rule?.forceExpose
+        ? rule.level === "full" || rule.level === "hint" || rule.level === "name"
+          ? rule.level
+          : "name"
+        : config.exposeAllActiveTools && options.active.has(tool.name)
+          ? "name"
+          : undefined,
       preferred: rule?.level === "hint" || rule?.level === "name" ? rule.level : "full",
       texts: {
         full: renderEntry(tool, "full", native.sections.get(tool.name)),

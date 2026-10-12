@@ -154,3 +154,106 @@ test("shared budget charges actual entry text and is deterministic across bounda
   )
   expect(readNativeCatalog(inherited, tools).sections.size).toBe(0)
 })
+
+test("fixed forced formats exceed budget, Auto and unspecified forced levels reserve Name, Omit wins", () => {
+  const tools = [
+    tool("full"),
+    tool("hint"),
+    tool("name"),
+    tool("auto"),
+    tool("unspecified"),
+    tool("omit"),
+    tool("ordinary"),
+  ]
+  const config = {
+    ...DEFAULT_CONFIG,
+    budget: 0,
+    rules: tools.slice(0, 6).map((t) => ({
+      match: [t.name],
+      forceExpose: true,
+      level:
+        t.name === "unspecified"
+          ? undefined
+          : (t.name as "full" | "hint" | "name" | "auto" | "omit"),
+    })),
+  }
+  const result = readNativeCatalog(
+    createCatalog(native(tools), config, options(tools)),
+    tools,
+  ).sections
+  expect(result.get("full")).toBe(renderEntry(tools[0]!, "full"))
+  expect(result.get("hint")).toBe(renderEntry(tools[1]!, "hint"))
+  for (const name of ["name", "auto", "unspecified"])
+    expect(result.get(name)).toBe(toolHeading(name))
+  expect(result.has("omit")).toBe(false)
+  expect(result.has("ordinary")).toBe(false)
+})
+test("reserved content upgrades using only the cost difference", () => {
+  const item = tool("search"),
+    description = native([item])
+  const fullCost = Math.ceil(renderEntry(item, "full").length / 4)
+  const result = createCatalog(
+    description,
+    {
+      ...DEFAULT_CONFIG,
+      budget: fullCost,
+      rules: [{ match: ["search"], level: "auto", forceExpose: true }],
+    },
+    options([item]),
+  )
+  expect(readNativeCatalog(result, [item]).sections.get("search")).toBe(renderEntry(item, "full"))
+})
+test("global guarantee covers only eligible active tools and overrides fixed level with a Name minimum", () => {
+  const tools = [
+    tool("full"),
+    tool("hint"),
+    tool("omit"),
+    tool("inactive"),
+    tool("deferred"),
+    tool("hidden"),
+    tool("model"),
+    tool("codemode"),
+  ]
+  tools[4]!.exposure = "deferred"
+  tools[5]!.exposure = "hidden"
+  tools[6]!.exposure = "model-only"
+  const opts = options(tools)
+  opts.active.delete("inactive")
+  const config = {
+    ...DEFAULT_CONFIG,
+    budget: 0,
+    exposeAllActiveTools: true,
+    rules: [
+      { match: ["full"], level: "full" as const },
+      { match: ["hint"], level: "hint" as const },
+      { match: ["omit"], level: "omit" as const },
+    ],
+  }
+  const sections = readNativeCatalog(createCatalog(native(tools), config, opts), tools).sections
+  expect([...sections.keys()]).toEqual(["full", "hint"])
+  expect(sections.get("full")).toBe(toolHeading("full"))
+  expect(sections.get("hint")).toBe(toolHeading("hint"))
+})
+test("forced minima reserve budget before high-priority optional tools", () => {
+  const forced = tool("forced"),
+    optional = tool("optional"),
+    tools = [optional, forced]
+  const budget = Math.ceil(renderEntry(optional, "full").length / 4)
+  const sections = readNativeCatalog(
+    createCatalog(
+      native(tools),
+      {
+        ...DEFAULT_CONFIG,
+        budget,
+        rules: [
+          { match: ["forced"], forceExpose: true },
+          { match: ["optional"], priority: 1000 },
+        ],
+      },
+      options(tools),
+    ),
+    tools,
+  ).sections
+  expect(sections.has("optional")).toBe(false)
+  expect(sections.has("forced")).toBe(true)
+})
