@@ -30,25 +30,38 @@ export function updateCodemodeDescription(
 export default function codemodeToolCatalog(pi: ExtensionAPI): void {
   let config: CatalogConfig | undefined
   let loadout: ToolLoadout | undefined
-  createCodemodeExtension()({
-    ...pi,
-    registerTool(tool) {
-      const prepareLoadout = tool.prepareLoadout
-      if (tool.name !== "codemode" || !prepareLoadout)
-        throw new Error("Unsupported native Codemode definition: prepareLoadout is required.")
-      pi.registerTool({
-        ...tool,
-        prepareLoadout(current) {
-          loadout = current
-          return prepareLoadout(current)
-        },
-      })
-    },
-  })
+  let captured = false
   pi.on("session_start", (_event, ctx) => {
     config = loadConfig(getAgentDir(), ctx.cwd, ctx.isProjectTrusted())
+    // Let Pi resolve trust, settings and CLI selection before taking over an existing tool.
+    const native = pi.getAllTools().find((tool) => tool.name === "codemode")
+    if (native?.sourceInfo.path !== "builtin:codemode") return
+    createCodemodeExtension()({
+      ...pi,
+      registerTool(tool) {
+        const prepareLoadout = tool.prepareLoadout
+        if (tool.name !== "codemode" || !prepareLoadout)
+          throw new Error("Unsupported native Codemode definition: prepareLoadout is required.")
+        pi.registerTool({
+          ...tool,
+          prepareLoadout(current) {
+            loadout = current
+            return prepareLoadout(current)
+          },
+        })
+      },
+    })
+    if (
+      pi.getAllTools().find((tool) => tool.name === "codemode")?.sourceInfo.path ===
+      "builtin:codemode"
+    )
+      throw new Error(
+        "Load the catalog as an extension path before builtin:codemode, not as a later inline factory.",
+      )
+    captured = true
   })
   pi.on("context_with_system", (event, ctx) => {
+    if (!captured || !pi.getActiveTools().includes("codemode")) return
     config ??= loadConfig(getAgentDir(), ctx.cwd, ctx.isProjectTrusted())
     if (isNativeConfig(config)) return
     const current = loadout

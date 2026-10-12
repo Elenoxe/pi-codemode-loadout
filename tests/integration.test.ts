@@ -37,6 +37,7 @@ test("replays additions and removals without mutating the transcript", () => {
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
 import {
   createAssistantMessageEventStream,
   getCurrentTools,
@@ -52,7 +53,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent"
-import catalogExtension from "../src/index"
+const catalogPath = fileURLToPath(new URL("../src/index.ts", import.meta.url))
 
 export async function withSession(
   config: unknown,
@@ -63,6 +64,12 @@ export async function withSession(
     control: { pi: ExtensionAPI; root: string; script: (code: string) => void },
   ) => Promise<void>,
   projectTrusted = true,
+  nativeExtensions: string[] = [],
+  nativeSelection: {
+    noExtensions?: boolean
+    disabledBuiltinExtensions?: string[]
+    defaultTools?: string[]
+  } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "catalog-integration-"))
   const previous = process.env.PI_CODING_AGENT_DIR
@@ -71,8 +78,9 @@ export async function withSession(
   let api: ExtensionAPI | undefined
   let pendingCode: string | undefined
   const settings = SettingsManager.inMemory({
+    extensions: nativeExtensions,
     codemode: { mode, inlineBudget: 10000 },
-    defaultTools: ["read", "bash", "edit", "write", "codemode"],
+    defaultTools: nativeSelection.defaultTools ?? ["read", "bash", "edit", "write", "codemode"],
     compaction: { enabled: false },
     retry: { enabled: false },
   })
@@ -89,13 +97,15 @@ export async function withSession(
     cwd: join(root, "workspace"),
     agentDir: root,
     settingsManager: settings,
+    additionalExtensionPaths: [catalogPath],
+    noExtensions: nativeSelection.noExtensions,
+    disabledBuiltinExtensions: nativeSelection.disabledBuiltinExtensions,
     noSkills: true,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
     extensionFactories: [
       { name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() },
-      catalogExtension,
       createMcpExtension({ loadConfig: () => ({ servers: [], errors: [] }) }),
       (pi) => {
         api = pi
@@ -147,8 +157,8 @@ export async function withSession(
     const extensions = loader.getExtensions()
     expect(extensions.errors).toEqual([])
     expect(
-      extensions.extensions.filter((extension) => extension.tools.has("codemode")),
-    ).toHaveLength(1)
+      extensions.extensions.find((extension) => extension.resolvedPath === catalogPath)!.tools.size,
+    ).toBe(0)
     const result = await createAgentSession({
       cwd: join(root, "workspace"),
       agentDir: root,
@@ -158,8 +168,10 @@ export async function withSession(
       sessionManager: SessionManager.inMemory(join(root, "workspace")),
     })
     session = result.session
+    const activeBeforeStart = session.getActiveToolNames()
     const errors: string[] = []
     await session.bindExtensions({ onError: (error) => errors.push(error.error) })
+    expect(session.getActiveToolNames()).toEqual(activeBeforeStart)
     await run(session, requests, {
       get pi() {
         return api!
@@ -658,5 +670,83 @@ test("new MCP Full entries carry exact CallToolResult schemas and shared types, 
       expect(withdrawn).not.toContain("### `mcp__docs__search`")
       expect(withdrawn).not.toContain("Shared MCP Types:")
     },
+  )
+})
+
+test("disabled built-in Codemode cannot be registered or activated by the catalog", async () => {
+  for (const selection of [
+    { extensions: ["-builtin:codemode"] },
+    { extensions: ["!builtin:*"] },
+    { extensions: [], noExtensions: true },
+    { extensions: [], disabledBuiltinExtensions: ["codemode"] },
+  ]) {
+    await withSession(
+      {
+        budget: 0,
+        exposeAllActiveTools: true,
+        rules: [{ match: ["read"], level: "full", forceExpose: true }],
+      },
+      "only",
+      async (session, requests, { pi }) => {
+        expect(session.getAllTools().some((tool) => tool.name === "codemode")).toBe(false)
+        expect(session.getToolDefinition("codemode")).toBeUndefined()
+        expect(session.getActiveToolNames()).not.toContain("codemode")
+        pi.setActiveTools(["read", "codemode"])
+        expect(session.getActiveToolNames()).not.toContain("codemode")
+        await session.prompt("disabled")
+        expect(getCurrentTools(requests.at(-1)!).some((tool) => tool.name === "codemode")).toBe(
+          false,
+        )
+        expect(getCurrentTools(requests.at(-1)!).some((tool) => tool.name === "read")).toBe(true)
+      },
+      true,
+      selection.extensions,
+      selection,
+    )
+  }
+})
+
+test("native Codemode enable/disable changes take effect on reload", async () => {
+  await withSession(
+    { budget: 0, exposeAllActiveTools: true },
+    "only",
+    async (session, requests) => {
+      session.settingsManager.setExtensionPaths(["-builtin:codemode"])
+      await session.reload()
+      expect(session.getToolDefinition("codemode")).toBeUndefined()
+      await session.prompt("disabled")
+      expect(getCurrentTools(requests.at(-1)!).some((tool) => tool.name === "codemode")).toBe(false)
+      session.settingsManager.setExtensionPaths(["+builtin:codemode"])
+      await session.reload()
+      expect(session.getAllTools().find((tool) => tool.name === "codemode")!.exposure).toBe(
+        "model-only",
+      )
+      session.setActiveToolsByName(["read", "codemode"])
+      await session.prompt("enabled")
+      expect(
+        getCurrentTools(requests.at(-1)!).find((tool) => tool.name === "codemode")!.description,
+      ).toContain("### `read`")
+    },
+  )
+})
+
+test("inactive Codemode does not require a captured loadout", async () => {
+  await withSession(
+    { budget: 0, exposeAllActiveTools: true },
+    "only",
+    async (session, requests) => {
+      expect(session.getToolDefinition("codemode")!.exposure).toBe("model-only")
+      expect(session.getActiveToolNames()).toEqual(["read"])
+      await session.prompt("inactive")
+      expect(getCurrentTools(requests.at(-1)!).some((tool) => tool.name === "codemode")).toBe(false)
+      session.setActiveToolsByName(["read", "codemode"])
+      await session.prompt("explicitly activated")
+      expect(
+        getCurrentTools(requests.at(-1)!).find((tool) => tool.name === "codemode")!.description,
+      ).toContain("### `read`")
+    },
+    true,
+    [],
+    { defaultTools: ["read"] },
   )
 })
