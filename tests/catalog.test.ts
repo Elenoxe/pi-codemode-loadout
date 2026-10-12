@@ -257,3 +257,126 @@ test("forced minima reserve budget before high-priority optional tools", () => {
   expect(sections.has("optional")).toBe(false)
   expect(sections.has("forced")).toBe(true)
 })
+
+test("on mode excludes Direct even when forced or globally guaranteed; only requires activation", () => {
+  const tools = [tool("direct"), tool("inactive"), tool("mcp__docs__direct")]
+  for (const item of tools) item.exposure = "direct"
+  const opts = options(tools)
+  opts.active.delete("inactive")
+  const config = {
+    ...DEFAULT_CONFIG,
+    budget: 0,
+    exposeAllActiveTools: true,
+    rules: [
+      {
+        match: ["direct", "inactive", "mcp__docs__direct"],
+        level: "full" as const,
+        forceExpose: true,
+      },
+    ],
+  }
+  expect(
+    readNativeCatalog(createCatalog(native(tools), config, { ...opts, mode: "on" }), tools).sections
+      .size,
+  ).toBe(0)
+  expect([
+    ...readNativeCatalog(createCatalog(native(tools), config, opts), tools).sections.keys(),
+  ]).toEqual(["direct", "mcp__docs__direct"])
+})
+test("Deferred MCP requires explicit presentation selectors; generic source and Priority do not inline", () => {
+  const mcp = tool("mcp__docs__search"),
+    ordinary = tool("deferred")
+  mcp.namespace = { name: "mcp__docs", description: "Documentation" }
+  mcp.sourceInfo.source = "builtin"
+  mcp.exposure = ordinary.exposure = "deferred"
+  const tools = [mcp, ordinary]
+  for (const rules of [
+    [],
+    [{ match: ["mcp__docs__search"], priority: 200 }],
+    [{ match: [{ source: "builtin" }], level: "hint" as const }],
+    [{ match: [{ namespace: null }], level: "hint" as const }],
+  ]) {
+    expect(
+      readNativeCatalog(
+        createCatalog(
+          native(tools),
+          { ...DEFAULT_CONFIG, budget: 1000, exposeAllActiveTools: true, rules },
+          options(tools),
+        ),
+        tools,
+      ).sections.size,
+    ).toBe(0)
+  }
+  for (const match of [["mcp__docs__search"], [{ namespace: "mcp__docs" }]]) {
+    const result = createCatalog(
+      "intro",
+      { ...DEFAULT_CONFIG, budget: 0, rules: [{ match, level: "auto", forceExpose: true }] },
+      options(tools),
+    )
+    expect([...readNativeCatalog(result, tools).sections.keys()]).toEqual([mcp.name])
+    expect(result).toContain("## mcp__docs\nDocumentation")
+  }
+  mcp.exposure = "hidden"
+  expect(
+    readNativeCatalog(
+      createCatalog(
+        "intro",
+        { ...DEFAULT_CONFIG, rules: [{ match: [mcp.name], level: "full", forceExpose: true }] },
+        options(tools),
+      ),
+      tools,
+    ).sections.size,
+  ).toBe(0)
+})
+
+test("native Full descriptions containing real catalog headings are preserved intact", () => {
+  const a = tool(
+    "a",
+    "Example:\n\n### `b`\nDo not treat this example as a tool boundary.\n\n## server\nExample namespace heading.",
+  )
+  const b = tool("b")
+  b.namespace = { name: "server" }
+  const tools = [a, b]
+  const parsed = readNativeCatalog(native(tools), tools)
+  expect(parsed.sections.get("a")).toBe(renderEntry(a, "full"))
+  const result = createCatalog(
+    native(tools),
+    { ...DEFAULT_CONFIG, rules: [{ match: ["b"], level: "omit" }] },
+    options(tools),
+  )
+  expect(readNativeCatalog(result, tools).sections.get("a")).toBe(renderEntry(a, "full"))
+})
+
+test("unspecified forced level never selects Hint and source selectors can explicitly select MCP", () => {
+  const item = tool("search", "x".repeat(500))
+  const config = {
+    ...DEFAULT_CONFIG,
+    budget: Math.ceil(renderEntry(item, "hint").length / 4),
+    rules: [{ match: [item.name], forceExpose: true }],
+  }
+  expect(
+    readNativeCatalog(createCatalog(native([item]), config, options([item])), [item]).sections.get(
+      item.name,
+    ),
+  ).toBe(toolHeading(item.name))
+  const mcp = tool("mcp__docs__search")
+  mcp.exposure = "deferred"
+  mcp.sourceInfo.source = "npm:docs-adapter"
+  const result = createCatalog(
+    "intro",
+    { ...DEFAULT_CONFIG, rules: [{ match: [{ source: "npm:docs-adapter" }], level: "hint" }] },
+    options([mcp]),
+  )
+  expect(readNativeCatalog(result, [mcp]).sections.get(mcp.name)).toBe(renderEntry(mcp, "hint"))
+})
+test("same-priority namespaces round-robin before a namespace is completed", () => {
+  const a = tool("a"),
+    b = tool("b"),
+    c = tool("c"),
+    tools = [a, b, c]
+  c.namespace = { name: "server" }
+  const budget =
+    Math.ceil(renderEntry(a, "full").length / 4) + Math.ceil(renderEntry(c, "full").length / 4)
+  const result = createCatalog(native(tools), { ...DEFAULT_CONFIG, budget }, options(tools))
+  expect([...readNativeCatalog(result, tools).sections.keys()]).toEqual(["a", "c"])
+})

@@ -3,7 +3,7 @@ import { renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codem
 import type { ToolInfo } from "@earendil-works/pi-coding-agent"
 import type { CatalogConfig, ToolRule } from "./config"
 import { isNativeConfig } from "./config"
-import { resolveRule } from "./rules"
+import { matches, resolveRule } from "./rules"
 
 export interface CatalogOptions {
   tools: readonly ToolInfo[]
@@ -21,25 +21,28 @@ export function readNativeCatalog(description: string, tools: readonly ToolInfo[
   const start = description.indexOf(marker)
   if (start < 0) return { prefix: description, sections: new Map<string, string>() }
   const prefix = description.slice(0, start)
-  const headings = new Map(tools.map((tool) => [toolHeading(tool.name), tool.name]))
+  const headings = new Map(tools.map((tool) => [toolHeading(tool.name), tool]))
   const namespaces = new Set(tools.flatMap((tool) => (tool.namespace ? [tool.namespace.name] : [])))
   const sections = new Map<string, string>()
   let name: string | undefined
   let lines: string[] = []
   let fence: string | undefined
+  let protectedUntil = -1
   const finish = () => {
     if (name) sections.set(name, lines.join("\n").trimEnd())
   }
-  for (const line of description.slice(start + marker.length).split("\n")) {
+  const sourceLines = description.slice(start + marker.length).split("\n")
+  for (const [index, line] of sourceLines.entries()) {
     const delimiter = line.match(/^\s*(`{3,}|~{3,})/)
     if (delimiter) {
       if (!fence) fence = delimiter[1]!
       else if (delimiter[1]![0] === fence[0] && delimiter[1]!.length >= fence.length)
         fence = undefined
     }
-    const next = !fence ? headings.get(line) : undefined
+    const next = !fence && index > protectedUntil ? headings.get(line) : undefined
     const ns =
       !fence &&
+      index > protectedUntil &&
       [...namespaces].some(
         (value) =>
           line === `## ${value}` ||
@@ -48,24 +51,44 @@ export function readNativeCatalog(description: string, tools: readonly ToolInfo[
       )
     if (next || ns) {
       finish()
-      name = next
+      name = next?.name
       lines = next ? [line] : []
+      if (next) {
+        const body = fullDescription(next).trim()
+        if (
+          sourceLines
+            .slice(index + 1)
+            .join("\n")
+            .startsWith(body + "\n\ncodemode tool declaration:")
+        )
+          protectedUntil = index + body.split("\n").length
+      }
     } else if (name) lines.push(line)
   }
   finish()
   return { prefix, sections }
 }
 export function candidateTools(options: CatalogOptions, config: CatalogConfig): ToolInfo[] {
-  return options.tools
-    .filter((tool) => {
-      if (tool.name === "codemode" || tool.exposure === "hidden" || tool.exposure === "model-only")
-        return false
-      if (tool.exposure === "direct")
-        return options.mode === "only" && options.active.has(tool.name)
-      if (tool.exposure === "deferred") return false
-      return resolveRule(tool, config.rules)?.level !== "omit"
+  return options.tools.filter((tool) => {
+    if (tool.name === "codemode" || tool.exposure === "hidden" || tool.exposure === "model-only")
+      return false
+    const rule = resolveRule(tool, config.rules)
+    if (rule?.level === "omit") return false
+    if (tool.exposure === "direct") return options.mode === "only" && options.active.has(tool.name)
+    if (tool.exposure !== "deferred") return true
+    // Deferred discovery remains native unless a rule explicitly selects MCP presentation.
+    if (!tool.name.startsWith("mcp__") || !rule || (rule.level === undefined && !rule.forceExpose))
+      return false
+    return rule.match.some((value) => {
+      const selector = typeof value === "string" ? { name: value } : value
+      return (
+        matches(tool, selector) &&
+        (selector.name?.startsWith("mcp__") ||
+          selector.namespace?.startsWith("mcp__") ||
+          (selector.source !== undefined && selector.source !== "builtin"))
+      )
     })
-    .filter((tool) => resolveRule(tool, config.rules)?.level !== "omit")
+  })
 }
 function assemble(
   prefix: string,
@@ -99,6 +122,12 @@ function assemble(
   }
   return prefix + "\n\n" + output.join("\n\n")
 }
+function fullDescription(tool: ToolInfo): string {
+  const bullets = (tool.promptGuidelines ?? []).flatMap((value) =>
+    value.trim() ? ["- " + value.trim()] : [],
+  )
+  return bullets.length ? tool.description.trim() + "\n\n" + bullets.join("\n") : tool.description
+}
 type DisplayLevel = "full" | "hint" | "name"
 export function renderEntry(tool: ToolInfo, level: DisplayLevel, nativeFull?: string): string {
   const heading = toolHeading(tool.name)
@@ -109,12 +138,7 @@ export function renderEntry(tool: ToolInfo, level: DisplayLevel, nativeFull?: st
     return hint ? heading + "\n" + hint : heading
   }
   if (nativeFull !== undefined) return nativeFull
-  const bullets = (tool.promptGuidelines ?? []).flatMap((value) =>
-    value.trim() ? ["- " + value.trim()] : [],
-  )
-  const description = bullets.length
-    ? tool.description.trim() + "\n\n" + bullets.join("\n")
-    : tool.description
+  const description = fullDescription(tool)
   // Pi ToolInfo omits outputSchema; unknown is deliberate, not an inferred return type.
   return (
     heading +

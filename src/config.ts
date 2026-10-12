@@ -75,7 +75,11 @@ export function validateConfig(value: unknown, path = "config"): Partial<Catalog
           }
         }
       }
-      if ("level" in rule && !["auto", "full", "hint", "name", "omit"].includes(String(rule.level)))
+      if (
+        "level" in rule &&
+        (typeof rule.level !== "string" ||
+          !["auto", "full", "hint", "name", "omit"].includes(rule.level))
+      )
         throw new Error(`${location}.level: invalid level`)
       if (
         "priority" in rule &&

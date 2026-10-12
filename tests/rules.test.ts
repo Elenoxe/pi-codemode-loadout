@@ -40,6 +40,7 @@ test("Name > Namespace > Source, matching selector specificity and earliest tie"
 })
 test("invalid fields, wildcards, selectors and nonfinite values fail explicitly", () => {
   for (const value of [
+    { rules: [{ match: ["read"], level: ["full"] }] },
     null,
     { extra: true },
     { budget: -1 },
