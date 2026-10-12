@@ -67,3 +67,90 @@ test("catalog parser does not split headings inside fenced descriptions", () => 
   expect(result.sections.get("a")).toBe(section)
   expect(result.sections.get("b")).toBe(toolHeading("b") + "\nother")
 })
+
+test("Auto downgrades; omitted level and fixed Full never silently become Hint", () => {
+  const item = tool("search", "Description " + "x".repeat(300))
+  const description = native([item])
+  const hintCost = Math.ceil(renderEntry(item, "hint").length / 4)
+  const config = {
+    ...DEFAULT_CONFIG,
+    budget: hintCost,
+    rules: [{ match: ["search"], level: "auto" as const }],
+  }
+  expect(
+    readNativeCatalog(createCatalog(description, config, options([item])), [item]).sections.get(
+      "search",
+    ),
+  ).toBe(renderEntry(item, "hint"))
+  for (const level of [undefined, "full" as const]) {
+    expect(
+      readNativeCatalog(
+        createCatalog(
+          description,
+          { ...config, rules: [{ match: ["search"], level }] },
+          options([item]),
+        ),
+        [item],
+      ).sections.size,
+    ).toBe(0)
+  }
+  const nameCost = Math.ceil(renderEntry(item, "name").length / 4)
+  expect(
+    readNativeCatalog(
+      createCatalog(description, { ...config, budget: nameCost }, options([item])),
+      [item],
+    ).sections.get("search"),
+  ).toBe(renderEntry(item, "name"))
+  expect(
+    readNativeCatalog(
+      createCatalog(description, { ...config, budget: nameCost - 1 }, options([item])),
+      [item],
+    ).sections.size,
+  ).toBe(0)
+})
+test("priority precedes native namespace round-robin and cheapest-first within a group", () => {
+  const big = tool("big", "x".repeat(500)),
+    small = tool("small"),
+    ns = tool("ns")
+  ns.namespace = { name: "server", description: "Server tools" }
+  const tools = [big, small, ns]
+  const bigCost = Math.ceil(renderEntry(big, "full").length / 4)
+  const result = createCatalog(
+    native(tools),
+    { ...DEFAULT_CONFIG, budget: bigCost, rules: [{ match: ["big"], priority: 200 }] },
+    options(tools),
+  )
+  expect([...readNativeCatalog(result, tools).sections.keys()]).toEqual(["big"])
+  const smallCost = Math.ceil(renderEntry(small, "full").length / 4)
+  const plain = createCatalog(
+    native(tools),
+    { ...DEFAULT_CONFIG, budget: smallCost },
+    options(tools),
+  )
+  expect([...readNativeCatalog(plain, tools).sections.keys()]).toEqual(["small"])
+  const negative = createCatalog(
+    native(tools),
+    { ...DEFAULT_CONFIG, budget: smallCost, rules: [{ match: ["small"], priority: -1 }] },
+    options(tools),
+  )
+  expect([...readNativeCatalog(negative, tools).sections.keys()]).toEqual(["ns"])
+  expect(plain).toContain("## server (tools not listed)\nServer tools")
+})
+test("shared budget charges actual entry text and is deterministic across boundaries", () => {
+  const tools = [tool("a"), tool("b"), tool("c", "x".repeat(500))]
+  for (let budget = 0; budget < 300; budget += 7) {
+    const config = { ...DEFAULT_CONFIG, budget, rules: [{ match: ["c"], level: "auto" as const }] }
+    const result = createCatalog(native(tools), config, options(tools))
+    const sections = readNativeCatalog(result, tools).sections
+    expect(
+      [...sections.values()].reduce((sum, text) => sum + Math.ceil(text.length / 4), 0),
+    ).toBeLessThanOrEqual(budget)
+    expect(createCatalog(native(tools), config, options(tools))).toBe(result)
+  }
+  const inherited = createCatalog(
+    native(tools),
+    { ...DEFAULT_CONFIG, rules: [{ match: ["a"], level: "full" }] },
+    options(tools, 0),
+  )
+  expect(readNativeCatalog(inherited, tools).sections.size).toBe(0)
+})

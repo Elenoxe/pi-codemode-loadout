@@ -1,7 +1,7 @@
 import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode"
 import { renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode/declarations"
 import type { ToolInfo } from "@earendil-works/pi-coding-agent"
-import type { CatalogConfig } from "./config"
+import type { CatalogConfig, ToolRule } from "./config"
 import { isNativeConfig } from "./config"
 import { resolveRule } from "./rules"
 
@@ -126,6 +126,50 @@ export function renderEntry(tool: ToolInfo, level: DisplayLevel, nativeFull?: st
     }).trim()
   )
 }
+interface Entry {
+  tool: ToolInfo
+  rule: ToolRule | undefined
+  texts: Record<DisplayLevel, string>
+  preferred: DisplayLevel
+}
+export function sectionCost(text: string): number {
+  return Math.ceil(text.length / 4)
+}
+function allocate(entries: Entry[], budget: number): Map<string, string> {
+  const shown = new Map<string, string>()
+  let remaining = budget
+  const priorities = [...new Set(entries.map((entry) => entry.rule?.priority ?? 0))].sort(
+    (a, b) => b - a,
+  )
+  for (const priority of priorities) {
+    const groups = new Map<string, Entry[]>()
+    for (const entry of entries.filter((entry) => (entry.rule?.priority ?? 0) === priority)) {
+      const key = entry.tool.namespace?.name ?? ""
+      const group = groups.get(key) ?? []
+      group.push(entry)
+      groups.set(key, group)
+    }
+    const queues = [...groups]
+      .sort(([a], [b]) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)))
+      .map(([, group]) =>
+        group.sort((a, b) => sectionCost(a.texts[a.preferred]) - sectionCost(b.texts[b.preferred])),
+      )
+    while (queues.some((queue) => queue.length > 0)) {
+      for (const queue of queues) {
+        const entry = queue.shift()
+        if (!entry) continue
+        const levels: DisplayLevel[] =
+          entry.rule?.level === "auto" ? ["full", "hint", "name"] : [entry.preferred]
+        const level = levels.find((level) => sectionCost(entry.texts[level]) <= remaining)
+        if (level) {
+          shown.set(entry.tool.name, entry.texts[level])
+          remaining -= sectionCost(entry.texts[level])
+        }
+      }
+    }
+  }
+  return shown
+}
 export function createCatalog(
   description: string,
   config: CatalogConfig,
@@ -134,13 +178,19 @@ export function createCatalog(
   if (isNativeConfig(config)) return description
   const native = readNativeCatalog(description, options.tools)
   const tools = candidateTools(options, config)
-  const shown = new Map<string, string>()
-  for (const tool of tools) {
+  const entries = tools.map((tool): Entry => {
     const rule = resolveRule(tool, config.rules)
-    const level = rule?.level
-    if (level === "full" || level === "hint" || level === "name")
-      shown.set(tool.name, renderEntry(tool, level, native.sections.get(tool.name)))
-    else if (native.sections.has(tool.name)) shown.set(tool.name, native.sections.get(tool.name)!)
-  }
-  return assemble(native.prefix, tools, shown)
+    return {
+      tool,
+      rule,
+      preferred: rule?.level === "hint" || rule?.level === "name" ? rule.level : "full",
+      texts: {
+        full: renderEntry(tool, "full", native.sections.get(tool.name)),
+        hint: renderEntry(tool, "hint"),
+        name: renderEntry(tool, "name"),
+      },
+    }
+  })
+  const budget = config.budget === "inherit" ? options.inlineBudget : config.budget
+  return assemble(native.prefix, tools, allocate(entries, budget))
 }
