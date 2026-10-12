@@ -1,4 +1,5 @@
-import { toCodemodeIdentifier } from "@earendil-works/pi-codemode/declarations"
+import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode"
+import { renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode/declarations"
 import type { ToolInfo } from "@earendil-works/pi-coding-agent"
 import type { CatalogConfig } from "./config"
 import { isNativeConfig } from "./config"
@@ -98,6 +99,33 @@ function assemble(
   }
   return prefix + "\n\n" + output.join("\n\n")
 }
+type DisplayLevel = "full" | "hint" | "name"
+export function renderEntry(tool: ToolInfo, level: DisplayLevel, nativeFull?: string): string {
+  const heading = toolHeading(tool.name)
+  if (level === "name") return heading
+  if (level === "hint") {
+    const paragraph = tool.description.trim().split(/\n\s*\n/)[0] ?? ""
+    const hint = paragraph.replace(/\s+/g, " ").slice(0, 160)
+    return hint ? heading + "\n" + hint : heading
+  }
+  if (nativeFull !== undefined) return nativeFull
+  const bullets = (tool.promptGuidelines ?? []).flatMap((value) =>
+    value.trim() ? ["- " + value.trim()] : [],
+  )
+  const description = bullets.length
+    ? tool.description.trim() + "\n\n" + bullets.join("\n")
+    : tool.description
+  // Pi ToolInfo omits outputSchema; unknown is deliberate, not an inferred return type.
+  return (
+    heading +
+    "\n" +
+    renderToolSample({
+      name: tool.name,
+      description,
+      inputSchema: tool.parameters as CodemodeJsonSchema,
+    }).trim()
+  )
+}
 export function createCatalog(
   description: string,
   config: CatalogConfig,
@@ -105,5 +133,14 @@ export function createCatalog(
 ): string {
   if (isNativeConfig(config)) return description
   const native = readNativeCatalog(description, options.tools)
-  return assemble(native.prefix, candidateTools(options, config), native.sections)
+  const tools = candidateTools(options, config)
+  const shown = new Map<string, string>()
+  for (const tool of tools) {
+    const rule = resolveRule(tool, config.rules)
+    const level = rule?.level
+    if (level === "full" || level === "hint" || level === "name")
+      shown.set(tool.name, renderEntry(tool, level, native.sections.get(tool.name)))
+    else if (native.sections.has(tool.name)) shown.set(tool.name, native.sections.get(tool.name)!)
+  }
+  return assemble(native.prefix, tools, shown)
 }
