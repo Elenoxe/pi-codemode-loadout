@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "target": "ESNext",
+
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+
+    "types": ["bun"],
+
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts", "benchmarks/**/*.ts"]
+}

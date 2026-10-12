@@ -1,0 +1,32 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+out/
+*.tgz
+
+# test and coverage output
+coverage/
+*.lcov
+
+# logs
+logs/
+*.log
+
+# environment files
+.env
+.env.*.local
+
+# caches
+.cache/
+*.tsbuildinfo
+
+# IDE and OS files
+.idea/
+.DS_Store
+
+
+# AI agents and assistants
+.pi/
+AGENTS.md

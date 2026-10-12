@@ -1,0 +1,11 @@
+node_modules
+.pi
+dist
+out
+coverage
+*.lcov
+*.tsbuildinfo
+*.tgz
+.env
+.env.*.local
+bun.lock
