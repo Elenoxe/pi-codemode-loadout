@@ -94,7 +94,7 @@ export async function withSession(
     noThemes: true,
     noContextFiles: true,
     extensionFactories: [
-      createCodemodeExtension(),
+      { name: "codemode", builtin: true, replaceable: true, factory: createCodemodeExtension() },
       catalogExtension,
       createMcpExtension({ loadConfig: () => ({ servers: [], errors: [] }) }),
       (pi) => {
@@ -144,6 +144,11 @@ export async function withSession(
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined
   try {
     await loader.reload()
+    const extensions = loader.getExtensions()
+    expect(extensions.errors).toEqual([])
+    expect(
+      extensions.extensions.filter((extension) => extension.tools.has("codemode")),
+    ).toHaveLength(1)
     const result = await createAgentSession({
       cwd: join(root, "workspace"),
       agentDir: root,
@@ -156,7 +161,9 @@ export async function withSession(
     const errors: string[] = []
     await session.bindExtensions({ onError: (error) => errors.push(error.error) })
     await run(session, requests, {
-      pi: api!,
+      get pi() {
+        return api!
+      },
       root,
       script: (code) => {
         pendingCode = code
@@ -516,4 +523,140 @@ test("explicit defaults and disabled configuration preserve native descriptions"
       )
     })
   }
+})
+
+import { Type } from "typebox"
+
+test("budget-only overrides match native Pi even when structured schemas were originally omitted", async () => {
+  await withSession({ budget: 200 }, "only", async (session, requests, control) => {
+    const { pi, root } = control
+    session.settingsManager.applyOverrides({ codemode: { inlineBudget: 100 } })
+    session.setActiveToolsByName(["codemode"])
+    const outputSchema = Type.Object(
+      Object.fromEntries(
+        Array.from({ length: 500 }, (_, index) => ["field" + index, Type.String()]),
+      ),
+    )
+    pi.registerTool({
+      name: "huge",
+      label: "huge",
+      description: "Huge structured result",
+      parameters: Type.Object({}),
+      outputSchema,
+      exposure: "codemode",
+      async execute() {
+        return { content: [], details: undefined, structuredContent: {} }
+      },
+    })
+    pi.registerTool({
+      name: "small",
+      label: "small",
+      description: "Small result",
+      parameters: Type.Object({}),
+      exposure: "codemode",
+      async execute() {
+        return { content: [{ type: "text", text: "small" }], details: undefined }
+      },
+    })
+    await session.prompt("custom budget")
+    const actual = getCurrentTools(requests.at(-1)!).find(
+      (tool) => tool.name === "codemode",
+    )!.description
+    expect(actual).not.toContain("### `huge`")
+    expect(actual).toContain("### `small`")
+    session.settingsManager.applyOverrides({ codemode: { inlineBudget: 200 } })
+    session.setActiveToolsByName(session.getActiveToolNames())
+    expect(actual).toBe(
+      session.agent.state.tools.find((tool) => tool.name === "codemode")!.description,
+    )
+
+    session.settingsManager.applyOverrides({ codemode: { inlineBudget: 100 } })
+    writeFileSync(join(root, "codemode-tool-catalog.json"), JSON.stringify({ budget: 20000 }))
+    const huge = session.getToolDefinition("huge")!
+    const small = session.getToolDefinition("small")!
+    await session.reload()
+    control.pi.registerTool(huge)
+    control.pi.registerTool(small)
+    await session.prompt("larger custom budget")
+    const expanded = getCurrentTools(requests.at(-1)!).find(
+      (tool) => tool.name === "codemode",
+    )!.description
+    expect(expanded).toContain("field499: string")
+    expect(expanded).not.toContain("Promise<unknown>")
+    session.settingsManager.applyOverrides({ codemode: { inlineBudget: 20000 } })
+    session.setActiveToolsByName(session.getActiveToolNames())
+    expect(expanded).toBe(
+      session.agent.state.tools.find((tool) => tool.name === "codemode")!.description,
+    )
+  })
+})
+
+test("capturing native Codemode preserves execute, schemas, renderers and active tools", async () => {
+  let original: import("@earendil-works/pi-coding-agent").ToolDefinition<any, any, any> | undefined
+  createCodemodeExtension()({
+    registerTool(tool) {
+      original = tool
+    },
+  } as ExtensionAPI)
+  await withSession({ budget: 0 }, "only", async (session, requests) => {
+    const captured = session.getToolDefinition("codemode")!
+    expect(captured.execute.toString()).toBe(original!.execute.toString())
+    expect(captured.parameters).toBe(original!.parameters)
+    expect(captured.renderCall).toBe(original!.renderCall)
+    expect(captured.renderResult).toBe(original!.renderResult)
+    expect(captured.constrainedSampling).toEqual(original!.constrainedSampling)
+    expect(captured.exposure).toBe(original!.exposure)
+    expect(captured.defaultActive).toBe(original!.defaultActive)
+    expect(session.getActiveToolNames()).toEqual(["read", "bash", "edit", "write", "codemode"])
+    await session.prompt("only native tools")
+    expect(session.getActiveToolNames()).toEqual(["read", "bash", "edit", "write", "codemode"])
+    expect(getCurrentTools(requests.at(-1)!).map((tool) => tool.name)).toEqual(["codemode"])
+  })
+})
+
+test("new MCP Full entries carry exact CallToolResult schemas and shared types, and refresh after replacement", async () => {
+  await withSession(
+    {
+      budget: 0,
+      rules: [{ match: [{ namespace: "mcp__docs" }], level: "full", forceExpose: true }],
+    },
+    "only",
+    async (session, requests, { pi, script }) => {
+      const connect = async (server: string) => {
+        pi.registerMcpServer("docs", {
+          command: "node",
+          args: ["-e", server],
+          exposure: "codemode",
+        })
+        script(
+          'text(await tools.mcp__docs__search({query:"schema capture"}));text(await describeTool("mcp__docs__search"));',
+        )
+        await session.prompt("connect")
+      }
+      await connect(mcpServer)
+      const actual = getCurrentTools(requests.at(-1)!).find(
+        (tool) => tool.name === "codemode",
+      )!.description
+      expect(actual).toContain("Shared MCP Types:")
+      expect(actual).toContain("Promise<CallToolResult<")
+      expect(actual).toContain("answer?: string")
+      const discovery = session.messages.filter((message) => message.role === "toolResult").at(-1)!
+      expect(JSON.stringify(discovery)).toContain("answer?: string")
+
+      pi.unregisterMcpServer("docs")
+      await connect(mcpServer.replace('answer:{type:"string"}', 'revised:{type:"number"}'))
+      const revised = getCurrentTools(requests.at(-1)!).find(
+        (tool) => tool.name === "codemode",
+      )!.description
+      expect(revised).toContain("revised?: number")
+      expect(revised).not.toContain("answer?: string")
+      pi.unregisterMcpServer("docs")
+      await session.prompt("withdrawn")
+      const withdrawn = getCurrentTools(requests.at(-1)!).find(
+        (tool) => tool.name === "codemode",
+      )!.description
+      expect(withdrawn).not.toContain("### `mcp__docs__search`")
+      expect(withdrawn).not.toContain("Shared MCP Types:")
+    },
+  )
 })

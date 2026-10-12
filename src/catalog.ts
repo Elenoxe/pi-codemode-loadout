@@ -1,12 +1,20 @@
 import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode"
-import { renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode/declarations"
-import type { ToolInfo } from "@earendil-works/pi-coding-agent"
+import {
+  MCP_TYPESCRIPT_PREAMBLE,
+  mcpStructuredContentSchema,
+  renderToolSample,
+  toCodemodeIdentifier,
+} from "@earendil-works/pi-codemode/declarations"
+import type { ToolInfo, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import type { CatalogConfig, ToolRule } from "./config"
 import { isNativeConfig } from "./config"
 import { matches, resolveRule } from "./rules"
 
+export interface CatalogToolInfo extends ToolInfo {
+  outputSchema?: ToolDefinition["outputSchema"]
+}
 export interface CatalogOptions {
-  tools: readonly ToolInfo[]
+  tools: readonly CatalogToolInfo[]
   active: ReadonlySet<string>
   mode: "on" | "only"
   inlineBudget: number
@@ -68,7 +76,7 @@ export function readNativeCatalog(description: string, tools: readonly ToolInfo[
   finish()
   return { prefix, sections }
 }
-export function candidateTools(options: CatalogOptions, config: CatalogConfig): ToolInfo[] {
+export function candidateTools(options: CatalogOptions, config: CatalogConfig): CatalogToolInfo[] {
   return options.tools.filter((tool) => {
     if (tool.name === "codemode" || tool.exposure === "hidden" || tool.exposure === "model-only")
       return false
@@ -129,7 +137,11 @@ function fullDescription(tool: ToolInfo): string {
   return bullets.length ? tool.description.trim() + "\n\n" + bullets.join("\n") : tool.description
 }
 type DisplayLevel = "full" | "hint" | "name"
-export function renderEntry(tool: ToolInfo, level: DisplayLevel, nativeFull?: string): string {
+export function renderEntry(
+  tool: CatalogToolInfo,
+  level: DisplayLevel,
+  nativeFull?: string,
+): string {
   const heading = toolHeading(tool.name)
   if (level === "name") return heading
   if (level === "hint") {
@@ -139,7 +151,6 @@ export function renderEntry(tool: ToolInfo, level: DisplayLevel, nativeFull?: st
   }
   if (nativeFull !== undefined) return nativeFull
   const description = fullDescription(tool)
-  // Pi ToolInfo omits outputSchema; unknown is deliberate, not an inferred return type.
   return (
     heading +
     "\n" +
@@ -147,11 +158,12 @@ export function renderEntry(tool: ToolInfo, level: DisplayLevel, nativeFull?: st
       name: tool.name,
       description,
       inputSchema: tool.parameters as CodemodeJsonSchema,
+      outputSchema: (tool.outputSchema ?? { type: "string" }) as CodemodeJsonSchema,
     }).trim()
   )
 }
 interface Entry {
-  tool: ToolInfo
+  tool: CatalogToolInfo
   rule: ToolRule | undefined
   texts: Record<DisplayLevel, string>
   preferred: DisplayLevel
@@ -233,5 +245,17 @@ export function createCatalog(
     }
   })
   const budget = config.budget === "inherit" ? options.inlineBudget : config.budget
-  return assemble(native.prefix, tools, allocate(entries, budget))
+  const shown = allocate(entries, budget)
+  const sharedTypes = "Shared MCP Types:\n```ts\n" + MCP_TYPESCRIPT_PREAMBLE + "\n```"
+  let prefix = native.prefix.replace("\n\n" + sharedTypes, "")
+  if (
+    entries.some(
+      (entry) =>
+        shown.get(entry.tool.name) === entry.texts.full &&
+        mcpStructuredContentSchema(entry.tool.outputSchema as CodemodeJsonSchema | undefined) !==
+          undefined,
+    )
+  )
+    prefix += "\n\n" + sharedTypes
+  return assemble(prefix, tools, shown)
 }

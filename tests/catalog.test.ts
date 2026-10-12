@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import type { ToolInfo } from "@earendil-works/pi-coding-agent"
+import type { CatalogToolInfo as ToolInfo } from "../src/catalog"
 import { DEFAULT_CONFIG } from "../src/config"
 import { createCatalog, readNativeCatalog, renderEntry, toolHeading } from "../src/catalog"
 
@@ -23,12 +23,18 @@ const options = (tools: ToolInfo[], inlineBudget = 10000) => ({
   mode: "only" as const,
 })
 
-test("Full preserves original text and guidelines; new output types remain unknown", () => {
+test("Full preserves original declarations and guidelines and renders complete output types", () => {
   const item = tool("search")
   expect(renderEntry(item, "full", "original exact bytes")).toBe("original exact bytes")
   expect(renderEntry(item, "full")).toContain("Keep paths scoped.")
-  expect(renderEntry(item, "full")).toContain("Promise<unknown>")
+  expect(renderEntry(item, "full")).toContain("Promise<string>")
   expect(renderEntry(item, "full")).toContain("path: string")
+  item.outputSchema = {
+    type: "object",
+    properties: { answer: { type: "number" } },
+    required: ["answer"],
+  }
+  expect(renderEntry(item, "full")).toContain("Promise<{ answer: number; }>")
 })
 test("Hint is deterministic, bounded and excludes schemas and guidelines; Name is just the heading", () => {
   const item = tool("search", "  First paragraph\n continues.\n\nSecond paragraph.")
