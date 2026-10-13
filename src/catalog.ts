@@ -94,6 +94,7 @@ export function candidateTools(options: CatalogOptions, config: CatalogConfig): 
     })
   })
 }
+const NAME_LIST_HEADER = "Other available tools (inspect with `describeTool(name)`):\n"
 function assemble(
   prefix: string,
   tools: readonly ToolInfo[],
@@ -134,10 +135,7 @@ function assemble(
   }
   if (output.length > 0) output.unshift("Nested tools:")
   if (names.length > 0)
-    output.push(
-      "Other available tools (inspect with `describeTool(name)`):\n" +
-        names.map((name) => `\`${name}\``).join(", "),
-    )
+    output.push(NAME_LIST_HEADER + names.map((name) => `\`${name}\``).join(", "))
   return output.length > 0 ? prefix + "\n\n" + output.join("\n\n") : prefix
 }
 function fullDescription(tool: ToolInfo): string {
@@ -188,17 +186,37 @@ export function sectionCost(text: string): number {
 }
 function allocate(entries: Entry[], budget: number): Map<string, AllocatedTool> {
   const shown = new Map<string, AllocatedTool>()
+  let nameCount = 0
+  let nameChars = 0
+  const nameCost = (count: number, chars: number) =>
+    count === 0 ? 0 : Math.ceil((NAME_LIST_HEADER.length + chars + 2 * (count - 1)) / 4)
+  const displayLevel = (entry: Entry, level: DisplayLevel): DisplayLevel =>
+    level === "hint" && entry.texts.hint === entry.texts.name ? "name" : level
+  const changeCost = (entry: Entry, level: DisplayLevel) => {
+    const current = shown.get(entry.tool.name)
+    const wasName = current?.level === "name"
+    const isName = displayLevel(entry, level) === "name"
+    const change = Number(isName) - Number(wasName)
+    return (
+      (isName ? 0 : sectionCost(entry.texts[level])) -
+      (current && !wasName ? sectionCost(current.text) : 0) +
+      nameCost(nameCount + change, nameChars + change * (entry.tool.name.length + 2)) -
+      nameCost(nameCount, nameChars)
+    )
+  }
   const show = (entry: Entry, level: DisplayLevel) => {
-    shown.set(entry.tool.name, {
-      level: level === "hint" && entry.texts.hint === entry.texts.name ? "name" : level,
-      text: entry.texts[level],
-    })
+    remaining -= changeCost(entry, level)
+    const actualLevel = displayLevel(entry, level)
+    const change =
+      Number(actualLevel === "name") - Number(shown.get(entry.tool.name)?.level === "name")
+    nameCount += change
+    nameChars += change * (entry.tool.name.length + 2)
+    shown.set(entry.tool.name, { level: actualLevel, text: entry.texts[level] })
   }
   let remaining = budget
   for (const entry of entries) {
     if (!entry.minimum) continue
     show(entry, entry.minimum)
-    remaining -= sectionCost(entry.texts[entry.minimum])
   }
   if (remaining < 0) return shown
   const upgrades: Entry[] = []
@@ -229,13 +247,9 @@ function allocate(entries: Entry[], budget: number): Map<string, AllocatedTool> 
               ? ["name"]
               : ["hint", "name"]
             : [entry.preferred]
-        const reserved = entry.minimum ? sectionCost(entry.texts[entry.minimum]) : 0
-        const level = levels.find(
-          (level) => sectionCost(entry.texts[level]) - reserved <= remaining,
-        )
+        const level = levels.find((level) => changeCost(entry, level) <= remaining)
         if (level) {
           show(entry, level)
-          remaining -= sectionCost(entry.texts[level]) - reserved
         }
       }
     }
@@ -243,10 +257,9 @@ function allocate(entries: Entry[], budget: number): Map<string, AllocatedTool> 
   for (const entry of upgrades) {
     const current = shown.get(entry.tool.name)
     if (current === undefined) continue
-    const extra = sectionCost(entry.texts.full) - sectionCost(current.text)
+    const extra = changeCost(entry, "full")
     if (extra <= remaining) {
       show(entry, "full")
-      remaining -= extra
     }
   }
   return shown

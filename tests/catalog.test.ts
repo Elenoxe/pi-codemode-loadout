@@ -29,7 +29,10 @@ const options = (tools: ToolInfo[], inlineBudget = 10000) => ({
   active: new Set(tools.map((t) => t.name)),
   mode: "only" as const,
 })
-// Keep allocation assertions charged at the original Name heading cost.
+const NAME_LIST_HEADER = "Other available tools (inspect with `describeTool(name)`):\n"
+const nameList = (names: string[]) =>
+  NAME_LIST_HEADER + names.map((name) => `\`${name}\``).join(", ")
+// Recover displayed entries for allocation assertions.
 function readCatalog(description: string, tools: ToolInfo[]) {
   const [declarations, names] = description.split(
     "\n\nOther available tools (inspect with `describeTool(name)`):\n",
@@ -110,7 +113,7 @@ test("configured hints override author snippets; tools without snippets degrade 
   expect(result).not.toContain("Authored summary")
   expect(result).not.toContain("Description must not be summarized.")
 
-  const budget = sectionCost(toolHeading("missing"))
+  const budget = sectionCost(nameList(["missing"]))
   const automatic = createCatalog(
     native([missing]),
     { ...DEFAULT_CONFIG, budget, rules: [{ match: ["missing"], level: "auto" }] },
@@ -173,17 +176,17 @@ test("Auto covers tools with Hint before Full; omitted and fixed Full never beco
       ).sections.size,
     ).toBe(0)
   }
-  const nameCost = Math.ceil(renderEntry(item, "name").length / 4)
+  item.promptSnippet = "Long authored summary. ".repeat(10)
+  const nameCost = sectionCost(nameList([item.name]))
   expect(
     readCatalog(createCatalog(description, { ...config, budget: nameCost }, options([item])), [
       item,
     ]).sections.get("search"),
   ).toBe(renderEntry(item, "name"))
   expect(
-    readNativeCatalog(
-      createCatalog(description, { ...config, budget: nameCost - 1 }, options([item])),
-      [item],
-    ).sections.size,
+    readCatalog(createCatalog(description, { ...config, budget: nameCost - 1 }, options([item])), [
+      item,
+    ]).sections.size,
   ).toBe(0)
 
   const tools = [tool("a"), tool("b"), tool("c")]
@@ -252,9 +255,11 @@ test("shared budget charges actual entry text and is deterministic across bounda
   for (let budget = 0; budget < 300; budget += 7) {
     const config = { ...DEFAULT_CONFIG, budget, rules: [{ match: ["c"], level: "auto" as const }] }
     const result = createCatalog(native(tools), config, options(tools))
-    const sections = readCatalog(result, tools).sections
+    const [declarations, names] = result.split("\n\n" + NAME_LIST_HEADER)
+    const sections = readNativeCatalog(declarations!, tools).sections
     expect(
-      [...sections.values()].reduce((sum, text) => sum + Math.ceil(text.length / 4), 0),
+      [...sections.values()].reduce((sum, text) => sum + sectionCost(text), 0) +
+        (names ? sectionCost(NAME_LIST_HEADER + names) : 0),
     ).toBeLessThanOrEqual(budget)
     expect(createCatalog(native(tools), config, options(tools))).toBe(result)
   }
@@ -299,6 +304,7 @@ test("fixed forced formats exceed budget, Auto and unspecified forced levels res
 test("reserved content upgrades using only the cost difference", () => {
   const item = tool("search"),
     description = native([item])
+  delete item.promptSnippet
   const fullCost = Math.ceil(renderEntry(item, "full").length / 4)
   const result = createCatalog(
     description,
@@ -310,6 +316,26 @@ test("reserved content upgrades using only the cost difference", () => {
     options([item]),
   )
   expect(readNativeCatalog(result, [item]).sections.get("search")).toBe(renderEntry(item, "full"))
+
+  const tools = [tool("a"), tool("b")]
+  for (const entry of tools) delete entry.promptSnippet
+  const budget = sectionCost(renderEntry(tools[0]!, "full")) + sectionCost(nameList(["b"]))
+  const config = {
+    ...DEFAULT_CONFIG,
+    budget,
+    exposeAllActiveTools: true,
+    rules: tools.map((entry) => ({
+      match: [entry.name],
+      level: "auto" as const,
+      priority: entry.name === "a" ? 10 : 0,
+    })),
+  }
+  const mixed = createCatalog(native(tools), config, options(tools))
+  expect(readCatalog(mixed, tools).sections.get("a")).toBe(renderEntry(tools[0]!, "full"))
+  expect(mixed).toEndWith(nameList(["b"]))
+  expect(createCatalog(native(tools), { ...config, budget: budget - 1 }, options(tools))).toEndWith(
+    nameList(["a", "b"]),
+  )
 })
 test("global guarantee covers only eligible active tools and overrides fixed level with a Name minimum", () => {
   const tools = [
@@ -535,6 +561,21 @@ test("Name-only catalogs omit empty nested tools and namespaces, including missi
         "`ask_user_question`, `mcp__docs__search`",
     )
   }
+
+  const budget = sectionCost(nameList(tools.map((entry) => entry.name)))
+  for (const level of ["name", "hint"] as const) {
+    const config = {
+      ...DEFAULT_CONFIG,
+      budget,
+      rules: tools.map((entry) => ({ match: [entry.name], level })),
+    }
+    expect(createCatalog(native(tools), config, options(tools))).toEndWith(
+      nameList(tools.map((entry) => entry.name)),
+    )
+    expect(
+      createCatalog(native(tools), { ...config, budget: budget - 1 }, options(tools)),
+    ).toEndWith(nameList([tools[0]!.name]))
+  }
 })
 
 test("namespace listing counts include Names and compact names retain registration spelling", () => {
@@ -548,7 +589,7 @@ test("namespace listing counts include Names and compact names retain registrati
   const budget =
     sectionCost(renderEntry(full, "full")) +
     sectionCost(renderEntry(hint, "hint")) +
-    sectionCost(renderEntry(named, "name"))
+    sectionCost(nameList([named.name]))
   const result = createCatalog(
     native(tools),
     {
