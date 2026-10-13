@@ -1,7 +1,7 @@
 import { getModel } from "@earendil-works/pi-ai/compat"
-import { expect, test } from "bun:test"
+import { expect, spyOn, test } from "bun:test"
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
-import { updateCodemodeDescription } from "../src/index"
+import { getToolsWithSchemas, updateCodemodeDescription } from "../src/index"
 
 const system = (description: string): AgentMessage => ({
   role: "system",
@@ -45,6 +45,7 @@ import {
   type Message,
 } from "@earendil-works/pi-ai"
 import {
+  AgentSession,
   createAgentSession,
   createCodemodeExtension,
   createMcpExtension,
@@ -169,9 +170,12 @@ export async function withSession(
     })
     session = result.session
     const activeBeforeStart = session.getActiveToolNames()
+    const nativeBeforeStart = session.getToolDefinition("codemode")
+    const originalGetAllTools = AgentSession.prototype.getAllTools
     const errors: string[] = []
     await session.bindExtensions({ onError: (error) => errors.push(error.error) })
     expect(session.getActiveToolNames()).toEqual(activeBeforeStart)
+    expect(session.getToolDefinition("codemode")).toBe(nativeBeforeStart)
     await run(session, requests, {
       get pi() {
         return api!
@@ -182,6 +186,11 @@ export async function withSession(
       },
     })
     expect(errors).toEqual([])
+    expect(AgentSession.prototype.getAllTools).toBe(originalGetAllTools)
+    expect(
+      loader.getExtensions().extensions.find((extension) => extension.resolvedPath === catalogPath)!
+        .tools.size,
+    ).toBe(0)
   } finally {
     session?.dispose()
     if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR
@@ -215,13 +224,19 @@ test("real Pi requests omit catalog entries without changing runtime or stored h
   )
 })
 
-test("zero configuration preserves the native description byte-for-byte", async () => {
+test("zero configuration preserves native requests without reading schemas", async () => {
   await withSession(undefined, "only", async (session, requests) => {
-    await session.prompt("one")
-    const stored = session.sessionManager.buildSessionContext().messages
-    expect(
-      getCurrentTools(requests[0]!).find((tool) => tool.name === "codemode")!.description,
-    ).toBe(getCurrentTools(stored).find((tool) => tool.name === "codemode")!.description)
+    const readSchema = spyOn(AgentSession.prototype, "getToolDefinition")
+    try {
+      await session.prompt("one")
+      expect(readSchema).not.toHaveBeenCalled()
+      const stored = session.sessionManager.buildSessionContext().messages
+      expect(getCurrentTools(requests[0]!)).toEqual(
+        getCurrentTools(stored).filter((tool) => tool.name === "codemode"),
+      )
+    } finally {
+      readSchema.mockRestore()
+    }
   })
 })
 
@@ -603,25 +618,42 @@ test("budget-only overrides match native Pi even when structured schemas were or
   })
 })
 
-test("capturing native Codemode preserves execute, schemas, renderers and active tools", async () => {
-  let original: import("@earendil-works/pi-coding-agent").ToolDefinition<any, any, any> | undefined
-  createCodemodeExtension()({
-    registerTool(tool) {
-      original = tool
-    },
-  } as ExtensionAPI)
-  await withSession({ budget: 0 }, "only", async (session, requests) => {
-    const captured = session.getToolDefinition("codemode")!
-    expect(captured.execute.toString()).toBe(original!.execute.toString())
-    expect(captured.parameters).toBe(original!.parameters)
-    expect(captured.renderCall).toBe(original!.renderCall)
-    expect(captured.renderResult).toBe(original!.renderResult)
-    expect(captured.constrainedSampling).toEqual(original!.constrainedSampling)
-    expect(captured.exposure).toBe(original!.exposure)
-    expect(captured.defaultActive).toBe(original!.defaultActive)
-    expect(session.getActiveToolNames()).toEqual(["read", "bash", "edit", "write", "codemode"])
+test("synchronous schema reads restore the prototype and leave native tools unchanged", async () => {
+  await withSession({ budget: 0 }, "only", async (session, requests, { pi }) => {
+    const native = session.getToolDefinition("codemode")!
+    const prepareLoadout = native.prepareLoadout
+    const active = session.getActiveToolNames()
+    const original = AgentSession.prototype.getAllTools
+    const raw = pi.getAllTools()
+    const tools = getToolsWithSchemas(pi)
+    expect(tools.find((tool) => tool.name === "bash")!.outputSchema).toBe(
+      session.getToolDefinition("bash")!.outputSchema,
+    )
+    expect(tools.find((tool) => tool.name === "bash")!.outputSchema).toBeDefined()
+    expect(AgentSession.prototype.getAllTools).toBe(original)
+    expect(pi.getAllTools()).toEqual(raw)
+    expect(
+      Object.hasOwn(
+        raw.find((tool) => tool.name === "bash")!,
+        "outputSchema",
+      ),
+    ).toBe(false)
+    expect(() =>
+      getToolsWithSchemas({
+        ...pi,
+        getAllTools() {
+          throw new Error("read failed")
+        },
+      }),
+    ).toThrow("read failed")
+    expect(AgentSession.prototype.getAllTools).toBe(original)
     await session.prompt("only native tools")
-    expect(session.getActiveToolNames()).toEqual(["read", "bash", "edit", "write", "codemode"])
+    expect(session.getToolDefinition("codemode")).toBe(native)
+    expect(native.prepareLoadout).toBe(prepareLoadout)
+    expect(session.getAllTools().find((tool) => tool.name === "codemode")!.sourceInfo.path).toBe(
+      "builtin:codemode",
+    )
+    expect(session.getActiveToolNames()).toEqual(active)
     expect(getCurrentTools(requests.at(-1)!).map((tool) => tool.name)).toEqual(["codemode"])
   })
 })
@@ -645,7 +677,12 @@ test("new MCP Full entries carry exact CallToolResult schemas and shared types, 
         )
         await session.prompt("connect")
       }
+      const original = AgentSession.prototype.getAllTools
       await connect(mcpServer)
+      expect(
+        getToolsWithSchemas(pi).find((tool) => tool.name === "mcp__docs__search")!.outputSchema,
+      ).toBe(session.getToolDefinition("mcp__docs__search")!.outputSchema)
+      expect(AgentSession.prototype.getAllTools).toBe(original)
       const actual = getCurrentTools(requests.at(-1)!).find(
         (tool) => tool.name === "codemode",
       )!.description
@@ -662,6 +699,12 @@ test("new MCP Full entries carry exact CallToolResult schemas and shared types, 
       )!.description
       expect(revised).toContain("revised?: number")
       expect(revised).not.toContain("answer?: string")
+      expect(
+        JSON.stringify(
+          getToolsWithSchemas(pi).find((tool) => tool.name === "mcp__docs__search")!.outputSchema,
+        ),
+      ).toContain("revised")
+      expect(AgentSession.prototype.getAllTools).toBe(original)
       pi.unregisterMcpServer("docs")
       await session.prompt("withdrawn")
       const withdrawn = getCurrentTools(requests.at(-1)!).find(
@@ -730,14 +773,23 @@ test("native Codemode enable/disable changes take effect on reload", async () =>
   )
 })
 
-test("inactive Codemode does not require a captured loadout", async () => {
+test("inactive Codemode does not read schemas or change native requests", async () => {
   await withSession(
     { budget: 0, exposeAllActiveTools: true },
     "only",
     async (session, requests) => {
       expect(session.getToolDefinition("codemode")!.exposure).toBe("model-only")
       expect(session.getActiveToolNames()).toEqual(["read"])
-      await session.prompt("inactive")
+      const readSchema = spyOn(AgentSession.prototype, "getToolDefinition")
+      try {
+        await session.prompt("inactive")
+        expect(readSchema).not.toHaveBeenCalled()
+        expect(getCurrentTools(requests.at(-1)!)).toEqual(
+          getCurrentTools(session.sessionManager.buildSessionContext().messages),
+        )
+      } finally {
+        readSchema.mockRestore()
+      }
       expect(getCurrentTools(requests.at(-1)!).some((tool) => tool.name === "codemode")).toBe(false)
       session.setActiveToolsByName(["read", "codemode"])
       await session.prompt("explicitly activated")
