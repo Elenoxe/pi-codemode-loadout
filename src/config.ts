@@ -4,6 +4,7 @@ import { Type, type Static } from "typebox"
 import { Value } from "typebox/value"
 
 const ExactStringSchema = Type.String({ pattern: "^(?!\\s*$)[^*]+$" })
+const HintSchema = Type.String({ pattern: "\\S" })
 const LevelSchema = Type.Union([
   Type.Literal("auto"),
   Type.Literal("full"),
@@ -23,6 +24,7 @@ const ToolRuleSchema = Type.Object(
   {
     match: Type.Array(Type.Union([ExactStringSchema, ToolSelectorSchema]), { minItems: 1 }),
     level: Type.Optional(LevelSchema),
+    hint: Type.Optional(HintSchema),
     priority: Type.Optional(Type.Number()),
     forceExpose: Type.Optional(Type.Boolean()),
   },
@@ -55,7 +57,17 @@ export function validateConfig(value: unknown, path = "config"): Partial<Catalog
     const error = Value.Errors(PartialConfigSchema, value)[0]!
     throw new Error(`${path}${error.instancePath}: ${error.message}`)
   }
-  return value
+  const config = value as Partial<CatalogConfig>
+  for (const [index, rule] of (config.rules ?? []).entries()) {
+    if (rule.hint === undefined) continue
+    const selector = rule.match[0]
+    const named =
+      typeof selector === "string" || (typeof selector === "object" && selector.name !== undefined)
+    if (rule.match.length !== 1 || !named) {
+      throw new Error(`${path}/rules/${index}/hint: requires a single exact tool name`)
+    }
+  }
+  return config
 }
 
 function readConfig(path: string): Partial<CatalogConfig> {

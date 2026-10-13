@@ -7,6 +7,7 @@ import { matches, resolveRule } from "./rules"
 
 export interface CatalogToolInfo extends ToolInfo {
   outputSchema?: ToolDefinition["outputSchema"]
+  promptSnippet?: ToolDefinition["promptSnippet"]
 }
 export interface CatalogOptions {
   tools: readonly CatalogToolInfo[]
@@ -136,12 +137,12 @@ export function renderEntry(
   tool: CatalogToolInfo,
   level: DisplayLevel,
   nativeFull?: string,
+  hintOverride?: string,
 ): string {
   const heading = toolHeading(tool.name)
   if (level === "name") return heading
   if (level === "hint") {
-    const paragraph = tool.description.trim().split(/\n\s*\n/)[0] ?? ""
-    const hint = paragraph.replace(/\s+/g, " ").slice(0, 160)
+    const hint = (hintOverride ?? tool.promptSnippet)?.trim()
     return hint ? heading + "\n" + hint : heading
   }
   if (nativeFull !== undefined) return nativeFull
@@ -199,7 +200,11 @@ function allocate(entries: Entry[], budget: number): Map<string, string> {
         if (!entry) continue
         if (entry.rule?.level === "auto") upgrades.push(entry)
         const levels: DisplayLevel[] =
-          entry.rule?.level === "auto" ? ["hint", "name"] : [entry.preferred]
+          entry.rule?.level === "auto"
+            ? entry.texts.hint === entry.texts.name
+              ? ["name"]
+              : ["hint", "name"]
+            : [entry.preferred]
         const reserved = entry.minimum ? sectionCost(entry.texts[entry.minimum]) : 0
         const level = levels.find(
           (level) => sectionCost(entry.texts[level]) - reserved <= remaining,
@@ -245,7 +250,7 @@ export function createCatalog(
       preferred: rule?.level === "hint" || rule?.level === "name" ? rule.level : "full",
       texts: {
         full: renderEntry(tool, "full", native.sections.get(tool.name)),
-        hint: renderEntry(tool, "hint"),
+        hint: renderEntry(tool, "hint", undefined, rule?.hint),
         name: renderEntry(tool, "name"),
       },
     }

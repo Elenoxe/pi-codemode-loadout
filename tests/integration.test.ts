@@ -199,6 +199,29 @@ export async function withSession(
   }
 }
 
+test("real Pi requests use authored snippets and configured Hint overrides", async () => {
+  await withSession(
+    {
+      rules: [
+        { match: ["bash"], level: "hint" },
+        { match: ["read"], level: "hint", hint: "Custom file reader" },
+      ],
+    },
+    "only",
+    async (session, requests) => {
+      await session.prompt("inspect hints")
+      const description = getCurrentTools(requests.at(-1)!).find(
+        (tool) => tool.name === "codemode",
+      )!.description
+      const bashSnippet = session.getToolDefinition("bash")!.promptSnippet
+      expect(bashSnippet).toBeTruthy()
+      expect(description).toContain(`### \`bash\`\n${bashSnippet}`)
+      expect(description).toContain("### `read`\nCustom file reader")
+      expect(description).not.toContain("### `read`\nRead the contents of a file.")
+    },
+  )
+})
+
 test("real Pi requests omit catalog entries without changing runtime or stored history", async () => {
   await withSession(
     { rules: [{ match: ["read"], level: "omit" }] },
@@ -360,7 +383,7 @@ test("late-connected real stdio MCP stays Deferred but can be explicitly listed 
       const description = getCurrentTools(requests.at(-1)!).find(
         (t) => t.name === "codemode",
       )!.description
-      expect(description).toContain("### `mcp__docs__search`\nSearch documentation.")
+      expect(description).toContain("### `mcp__docs__search`")
       expect(description).not.toContain("mcp__docs__search(args:")
       expect(session.getAllTools().find((t) => t.name === "mcp__docs__search")!.exposure).toBe(
         "deferred",
@@ -630,6 +653,10 @@ test("synchronous schema reads restore the prototype and leave native tools unch
       session.getToolDefinition("bash")!.outputSchema,
     )
     expect(tools.find((tool) => tool.name === "bash")!.outputSchema).toBeDefined()
+    expect(tools.find((tool) => tool.name === "bash")!.promptSnippet).toBe(
+      session.getToolDefinition("bash")!.promptSnippet,
+    )
+    expect(tools.find((tool) => tool.name === "bash")!.promptSnippet).toBeTruthy()
     expect(AgentSession.prototype.getAllTools).toBe(original)
     expect(pi.getAllTools()).toEqual(raw)
     expect(
@@ -638,6 +665,7 @@ test("synchronous schema reads restore the prototype and leave native tools unch
         "outputSchema",
       ),
     ).toBe(false)
+    expect(Object.hasOwn(raw.find((tool) => tool.name === "bash")!, "promptSnippet")).toBe(false)
     expect(() =>
       getToolsWithSchemas({
         ...pi,

@@ -60,8 +60,25 @@ test("invalid fields, wildcards, selectors and nonfinite values fail explicitly"
     { budget: NaN },
     { rules: [{ match: ["read"], priority: NaN }] },
     { rules: [{ match: ["read"], level: "bad" }] },
+    { rules: [{ match: ["read"], hint: "   " }] },
+    { rules: [{ match: ["read"], hint: 12 }] },
+    { rules: [{ match: ["read", "edit"], hint: "One summary" }] },
+    { rules: [{ match: [{ namespace: "files" }], hint: "One summary" }] },
+    { rules: [{ match: [{ source: "builtin" }], hint: "One summary" }] },
   ])
     expect(() => validateConfig(value)).toThrow()
+})
+test("custom Hint requires one exact named selector", () => {
+  expect(validateConfig({ rules: [{ match: ["read"], hint: "Read files" }] })).toEqual({
+    rules: [{ match: ["read"], hint: "Read files" }],
+  })
+  expect(
+    validateConfig({
+      rules: [{ match: [{ name: "read", source: "builtin" }], hint: "Read source files" }],
+    }),
+  ).toEqual({
+    rules: [{ match: [{ name: "read", source: "builtin" }], hint: "Read source files" }],
+  })
 })
 test("project fields override user fields; rules replace; untrusted project is not read", () => {
   const root = mkdtempSync(join(tmpdir(), "catalog-config-"))

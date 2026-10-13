@@ -13,6 +13,7 @@ function tool(name: string, description = "Search file contents."): ToolInfo {
   return {
     name,
     description,
+    promptSnippet: "Search file contents.",
     parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
     exposure: "codemode",
     promptGuidelines: ["Keep paths scoped."],
@@ -56,13 +57,56 @@ test("Full preserves native declarations and renders output types and input cons
   expect(renderEntry(item, "hint")).not.toContain("@minimum")
   expect(renderEntry(item, "name")).not.toContain("@minimum")
 })
-test("Hint is deterministic, bounded and excludes schemas and guidelines; Name is just the heading", () => {
-  const item = tool("search", "  First paragraph\n continues.\n\nSecond paragraph.")
-  expect(renderEntry(item, "hint")).toBe("### `search`\nFirst paragraph continues.")
-  expect(renderEntry(tool("long", "x".repeat(1000)), "hint")).toHaveLength(
-    toolHeading("long").length + 161,
+test("Hint uses authored snippets or rule overrides, falling back to Name", () => {
+  const item = tool("search", "  A long first paragraph.\n\nA second paragraph.")
+  item.promptSnippet = "Find file content quickly"
+  expect(renderEntry(item, "hint")).toBe("### `search`\nFind file content quickly")
+  expect(renderEntry(item, "hint", undefined, "  Custom purpose  ")).toBe(
+    "### `search`\nCustom purpose",
   )
+  expect(renderEntry(item, "hint")).not.toContain("long first paragraph")
+  expect(renderEntry(item, "hint")).not.toContain("Keep paths scoped.")
   expect(renderEntry(item, "name")).toBe("### `search`")
+
+  const missing = tool("missing", "This is not a usable short description.")
+  delete missing.promptSnippet
+  expect(renderEntry(missing, "hint")).toBe(toolHeading("missing"))
+  missing.promptSnippet = "   "
+  expect(renderEntry(missing, "hint")).toBe(toolHeading("missing"))
+})
+test("configured hints override author snippets; tools without snippets degrade to Name", () => {
+  const named = tool("named", "Detailed description for named.")
+  named.promptSnippet = "Authored summary"
+  const missing = tool("missing", "Description must not be summarized.")
+  delete missing.promptSnippet
+  const tools = [named, missing]
+  const result = createCatalog(
+    native(tools),
+    {
+      ...DEFAULT_CONFIG,
+      budget: 1000,
+      rules: [
+        { match: ["named"], level: "hint", hint: "Custom summary" },
+        { match: ["missing"], level: "hint" },
+      ],
+    },
+    options(tools),
+  )
+  const sections = readNativeCatalog(result, tools).sections
+  expect(sections.get("named")).toBe("### `named`\nCustom summary")
+  expect(sections.get("missing")).toBe(toolHeading("missing"))
+  expect(result).not.toContain("Authored summary")
+  expect(result).not.toContain("Description must not be summarized.")
+
+  const budget = sectionCost(toolHeading("missing"))
+  const automatic = createCatalog(
+    native([missing]),
+    { ...DEFAULT_CONFIG, budget, rules: [{ match: ["missing"], level: "auto" }] },
+    options([missing]),
+  )
+  expect(readNativeCatalog(automatic, [missing]).sections.get("missing")).toBe(
+    toolHeading("missing"),
+  )
 })
 test("catalog retains native instructions, applies fixed levels and excludes Omit", () => {
   const tools = [tool("full"), tool("hint"), tool("name"), tool("omit")]

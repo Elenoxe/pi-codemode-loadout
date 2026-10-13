@@ -28,10 +28,14 @@ export function updateCodemodeDescription(
 export function getToolsWithSchemas(pi: ExtensionAPI): CatalogToolInfo[] {
   const original = AgentSession.prototype.getAllTools
   AgentSession.prototype.getAllTools = function () {
-    return original.call(this).map((tool) => ({
-      ...tool,
-      outputSchema: this.getToolDefinition(tool.name)?.outputSchema,
-    }))
+    return original.call(this).map((tool) => {
+      const definition = this.getToolDefinition(tool.name)
+      return {
+        ...tool,
+        outputSchema: definition?.outputSchema,
+        promptSnippet: definition?.promptSnippet,
+      }
+    })
   }
   try {
     return pi.getAllTools()
