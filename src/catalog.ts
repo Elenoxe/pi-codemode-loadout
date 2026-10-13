@@ -1,8 +1,8 @@
 import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode"
 import { renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode/declarations"
 import type { ToolInfo, ToolDefinition } from "@earendil-works/pi-coding-agent"
-import type { CatalogConfig, ToolRule } from "./config"
-import { isNativeConfig } from "./config"
+import type { CatalogConfig, ToolRule, Level as DisplayLevel, DiagnosticReporter } from "./config"
+import { isNativeConfig, LEVELS, reportToConsole } from "./config"
 import { matches, resolveRule } from "./rules"
 
 export interface CatalogToolInfo extends ToolInfo {
@@ -14,6 +14,7 @@ export interface CatalogOptions {
   active: ReadonlySet<string>
   mode: "on" | "only"
   inlineBudget: number
+  reportDiagnostic?: DiagnosticReporter
 }
 export function toolHeading(name: string): string {
   const id = toCodemodeIdentifier(name)
@@ -77,12 +78,11 @@ export function candidateTools(options: CatalogOptions, config: CatalogConfig): 
     if (tool.name === "codemode" || tool.exposure === "hidden" || tool.exposure === "model-only")
       return false
     const rule = resolveRule(tool, config.rules)
-    if (rule?.level === "omit") return false
+    if (rule?.maxLevel === "omit") return false
     if (tool.exposure === "direct") return options.mode === "only" && options.active.has(tool.name)
     if (tool.exposure !== "deferred") return true
     // Deferred discovery remains native unless a rule explicitly selects MCP presentation.
-    if (!tool.name.startsWith("mcp__") || !rule || (rule.level === undefined && !rule.forceExpose))
-      return false
+    if (!tool.name.startsWith("mcp__") || rule?.minLevel === undefined) return false
     return rule.match.some((value) => {
       const selector = typeof value === "string" ? { name: value } : value
       return (
@@ -144,7 +144,6 @@ function fullDescription(tool: ToolInfo): string {
   )
   return bullets.length ? tool.description.trim() + "\n\n" + bullets.join("\n") : tool.description
 }
-type DisplayLevel = "full" | "hint" | "name"
 interface AllocatedTool {
   level: DisplayLevel
   text: string
@@ -170,7 +169,7 @@ export function renderEntry(
       name: tool.name,
       description,
       inputSchema: tool.parameters as CodemodeJsonSchema,
-      outputSchema: (tool.outputSchema ?? { type: "string" }) as CodemodeJsonSchema,
+      outputSchema: tool.outputSchema as CodemodeJsonSchema | undefined,
     }).trim()
   )
 }
@@ -178,7 +177,7 @@ interface Entry {
   tool: CatalogToolInfo
   rule: ToolRule | undefined
   texts: Record<DisplayLevel, string>
-  preferred: DisplayLevel
+  maximum: DisplayLevel
   minimum?: DisplayLevel
 }
 export function sectionCost(text: string): number {
@@ -219,7 +218,6 @@ function allocate(entries: Entry[], budget: number): Map<string, AllocatedTool> 
     show(entry, entry.minimum)
   }
   if (remaining < 0) return shown
-  const upgrades: Entry[] = []
   const priorities = [...new Set(entries.map((entry) => entry.rule?.priority ?? 0))].sort(
     (a, b) => b - a,
   )
@@ -231,35 +229,41 @@ function allocate(entries: Entry[], budget: number): Map<string, AllocatedTool> 
       group.push(entry)
       groups.set(key, group)
     }
-    const queues = [...groups]
+    const namespaces = [...groups]
       .sort(([a], [b]) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)))
-      .map(([, group]) =>
-        group.sort((a, b) => sectionCost(a.texts[a.preferred]) - sectionCost(b.texts[b.preferred])),
+      .map(([, group]) => group)
+    const coverage = (entry: Entry): DisplayLevel =>
+      entry.maximum !== "name" && entry.texts.hint !== entry.texts.name ? "hint" : "name"
+    for (const phase of ["coverage", "upgrade"] as const) {
+      const ceilingFor = (entry: Entry) =>
+        phase === "coverage" ? coverage(entry) : displayLevel(entry, entry.maximum)
+      const queues = namespaces.map((group) =>
+        group.filter((entry) => {
+          const current = shown.get(entry.tool.name)?.level
+          return current === undefined
+            ? phase === "coverage"
+            : LEVELS.indexOf(current) < LEVELS.indexOf(ceilingFor(entry))
+        }),
       )
-    while (queues.some((queue) => queue.length > 0)) {
-      for (const queue of queues) {
-        const entry = queue.shift()
-        if (!entry) continue
-        if (entry.rule?.level === "auto") upgrades.push(entry)
-        const levels: DisplayLevel[] =
-          entry.rule?.level === "auto"
-            ? entry.texts.hint === entry.texts.name
-              ? ["name"]
-              : ["hint", "name"]
-            : [entry.preferred]
-        const level = levels.find((level) => changeCost(entry, level) <= remaining)
-        if (level) {
-          show(entry, level)
+      while (queues.some((queue) => queue.length > 0)) {
+        for (const queue of queues) {
+          queue.sort((a, b) => changeCost(a, ceilingFor(a)) - changeCost(b, ceilingFor(b)))
+          const entry = queue.shift()
+          if (!entry) continue
+          const current = shown.get(entry.tool.name)?.level
+          const ceiling = ceilingFor(entry)
+          const levels = [...LEVELS]
+            .reverse()
+            .filter(
+              (level) =>
+                LEVELS.indexOf(level) <= LEVELS.indexOf(ceiling) &&
+                (current === undefined || LEVELS.indexOf(level) > LEVELS.indexOf(current)) &&
+                (level !== "hint" || entry.texts.hint !== entry.texts.name),
+            )
+          const level = levels.find((level) => changeCost(entry, level) <= remaining)
+          if (level) show(entry, level)
         }
       }
-    }
-  }
-  for (const entry of upgrades) {
-    const current = shown.get(entry.tool.name)
-    if (current === undefined) continue
-    const extra = changeCost(entry, "full")
-    if (extra <= remaining) {
-      show(entry, "full")
     }
   }
   return shown
@@ -272,26 +276,33 @@ export function createCatalog(
   if (isNativeConfig(config)) return description
   const native = readNativeCatalog(description, options.tools)
   const tools = candidateTools(options, config)
+  const reportDiagnostic = options.reportDiagnostic ?? reportToConsole
   const entries = tools.map((tool): Entry => {
     const rule = resolveRule(tool, config.rules)
+    const hint = renderEntry(tool, "hint", undefined, rule?.hint)
+    const name = renderEntry(tool, "name")
+    const missingMinimumHint = rule?.minLevel === "hint" && hint === name
+    if (missingMinimumHint && rule?.hint === undefined) {
+      reportDiagnostic(
+        `Tool ${tool.name}: minLevel "hint" has no non-empty hint or promptSnippet; using minimum Name`,
+        "error",
+      )
+    }
     let full: string | undefined
     return {
       tool,
       rule,
-      minimum: rule?.forceExpose
-        ? rule.level === "full" || rule.level === "hint" || rule.level === "name"
-          ? rule.level
-          : "name"
-        : config.exposeAllActiveTools && options.active.has(tool.name)
-          ? "name"
-          : undefined,
-      preferred: rule?.level === "hint" || rule?.level === "name" ? rule.level : "full",
+      minimum: missingMinimumHint
+        ? "name"
+        : (rule?.minLevel ??
+          (config.exposeAllActiveTools && options.active.has(tool.name) ? "name" : undefined)),
+      maximum: rule?.maxLevel === "hint" || rule?.maxLevel === "name" ? rule.maxLevel : "full",
       texts: {
         get full() {
           return (full ??= renderEntry(tool, "full", native.sections.get(tool.name)))
         },
-        hint: renderEntry(tool, "hint", undefined, rule?.hint),
-        name: renderEntry(tool, "name"),
+        hint,
+        name,
       },
     }
   })

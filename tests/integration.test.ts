@@ -34,7 +34,7 @@ test("replays additions and removals without mutating the transcript", () => {
   ).toMatchObject({ toolsAdded: [{ description: "changed" }] })
 })
 
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -62,7 +62,7 @@ export async function withSession(
   run: (
     session: Awaited<ReturnType<typeof createAgentSession>>["session"],
     requests: Message[][],
-    control: { pi: ExtensionAPI; root: string; script: (code: string) => void },
+    control: { pi: ExtensionAPI; root: string; script: (code: string) => void; errors: string[] },
   ) => Promise<void>,
   projectTrusted = true,
   nativeExtensions: string[] = [],
@@ -181,6 +181,7 @@ export async function withSession(
         return api!
       },
       root,
+      errors,
       script: (code) => {
         pendingCode = code
       },
@@ -203,8 +204,8 @@ test("real Pi requests use authored snippets and configured Hint overrides", asy
   await withSession(
     {
       rules: [
-        { match: ["bash"], level: "hint" },
-        { match: ["read"], level: "hint", hint: "Custom file reader" },
+        { match: ["bash"], maxLevel: "hint" },
+        { match: ["read"], maxLevel: "hint", hint: "Custom file reader" },
       ],
     },
     "only",
@@ -224,7 +225,7 @@ test("real Pi requests use authored snippets and configured Hint overrides", asy
 
 test("real Pi requests omit catalog entries without changing runtime or stored history", async () => {
   await withSession(
-    { rules: [{ match: ["read"], level: "omit" }] },
+    { rules: [{ match: ["read"], maxLevel: "omit" }] },
     "only",
     async (session, requests) => {
       const original = session.getToolDefinition("codemode")
@@ -265,7 +266,7 @@ test("zero configuration preserves native requests without reading schemas", asy
 
 test("native Codemode still executes omitted tools and all discovery APIs", async () => {
   await withSession(
-    { rules: [{ match: ["read"], level: "omit" }] },
+    { rules: [{ match: ["read"], maxLevel: "omit" }] },
     "only",
     async (session, requests, { script, root }) => {
       writeFileSync(join(root, "workspace", "sample.txt"), "real file content")
@@ -291,7 +292,7 @@ test("on mode never duplicates Direct declarations, including force and global g
     {
       budget: 0,
       exposeAllActiveTools: true,
-      rules: [{ match: ["read"], level: "full", forceExpose: true }],
+      rules: [{ match: ["read"], minLevel: "full" }],
     },
     "on",
     async (session, requests) => {
@@ -361,7 +362,7 @@ test("late-connected real stdio MCP stays Deferred but can be explicitly listed 
   await withSession(
     {
       budget: 0,
-      rules: [{ match: [{ namespace: "mcp__docs" }], level: "hint", forceExpose: true }],
+      rules: [{ match: [{ namespace: "mcp__docs" }], minLevel: "name", maxLevel: "hint" }],
     },
     "only",
     async (session, requests, { pi, script }) => {
@@ -403,7 +404,7 @@ test("late-connected real stdio MCP stays Deferred but can be explicitly listed 
 
 test("trusted project config overrides user fields on reload without merging rules", async () => {
   await withSession(
-    { budget: 0, exposeAllActiveTools: true, rules: [{ match: ["read"], level: "omit" }] },
+    { budget: 0, exposeAllActiveTools: true, rules: [{ match: ["read"], maxLevel: "omit" }] },
     "only",
     async (session, requests, { root }) => {
       await session.prompt("user config")
@@ -413,7 +414,7 @@ test("trusted project config overrides user fields on reload without merging rul
       mkdirSync(join(root, "workspace", ".pi"), { recursive: true })
       writeFileSync(
         join(root, "workspace", ".pi", "codemode-tool-catalog.json"),
-        JSON.stringify({ rules: [{ match: ["bash"], level: "omit" }] }),
+        JSON.stringify({ rules: [{ match: ["bash"], maxLevel: "omit" }] }),
       )
       await session.reload()
       await session.prompt("project override")
@@ -427,40 +428,224 @@ test("trusted project config overrides user fields on reload without merging rul
   )
 })
 
-test("budget-only overrides preserve exact native sections and native selection for available declarations", async () => {
-  await withSession({ budget: 500 }, "only", async (session, requests) => {
-    await session.prompt("budget")
-    const storedDescription = getCurrentTools(
-      session.sessionManager.buildSessionContext().messages,
-    ).find((t) => t.name === "codemode")!.description
-    const description = getCurrentTools(requests.at(-1)!).find(
-      (t) => t.name === "codemode",
-    )!.description
-    const tools = session.getAllTools()
-    const native = readNativeCatalog(storedDescription, tools)
-    const actual = readNativeCatalog(description, tools)
-    const sorted = [...native.sections].sort(
-      ([, a], [, b]) => Math.ceil(a.length / 4) - Math.ceil(b.length / 4),
-    )
-    let remaining = 500
-    const expected = new Set<string>()
-    for (const [name, text] of sorted) {
-      const cost = Math.ceil(text.length / 4)
-      if (cost > remaining) break
-      expected.add(name)
-      remaining -= cost
-    }
-    expect(new Set(actual.sections.keys())).toEqual(expected)
-    for (const [name, text] of actual.sections) expect(text).toBe(native.sections.get(name)!)
-    expect(actual.prefix).toBe(native.prefix)
-  })
+test("real requests reserve authored Hint minima before high-priority upgrades and lower coverage", async () => {
+  const rules = [
+    { match: ["read"], priority: 112 },
+    { match: ["bash"], minLevel: "hint", maxLevel: "hint", priority: 0 },
+  ]
+  await withSession(
+    { budget: 0, exposeAllActiveTools: true, rules },
+    "only",
+    async (session, requests, { pi, root }) => {
+      await session.prompt("hard minima")
+      const initial = getCurrentTools(requests.at(-1)!).find(
+        (tool) => tool.name === "codemode",
+      )!.description
+      const tools = getToolsWithSchemas(pi)
+      const bash = tools.find((tool) => tool.name === "bash")!
+      expect(initial).toContain(renderEntry(bash, "hint"))
+      expect(initial).not.toContain("read(args:")
+      expect(initial).toContain("`read`")
+      const stored = getCurrentTools(session.sessionManager.buildSessionContext().messages).find(
+        (tool) => tool.name === "codemode",
+      )!.description
+      const fullRead = readNativeCatalog(stored, tools).sections.get("read")!
+      const names = "Other available tools (inspect with `describeTool(name)`):\n`edit`, `write`"
+      const budget =
+        sectionCost(fullRead) + sectionCost(renderEntry(bash, "hint")) + sectionCost(names)
+      writeFileSync(
+        join(root, "codemode-tool-catalog.json"),
+        JSON.stringify({
+          budget,
+          exposeAllActiveTools: true,
+          rules,
+        }),
+      )
+      await session.reload()
+      await session.prompt("priority upgrade")
+      const actual = getCurrentTools(requests.at(-1)!).find(
+        (tool) => tool.name === "codemode",
+      )!.description
+      const declarations = actual.split("\n\nOther available tools")[0]!
+      expect(readNativeCatalog(declarations, tools).sections.get("read")).toBe(fullRead)
+      expect(actual).toContain(renderEntry(bash, "hint"))
+      expect(actual).toEndWith(names)
+      expect(actual).not.toContain("edit(args:")
+      expect(actual).not.toContain("write(args:")
+      expect(session.getActiveToolNames()).toEqual(["read", "bash", "edit", "write", "codemode"])
+    },
+  )
 })
 
-import { readNativeCatalog } from "../src/catalog"
+test("invalid configuration is reported once per load cycle and never reuses an earlier config", async () => {
+  const valid = { rules: [{ match: ["read"], maxLevel: "omit" }] }
+  const invalid = { rules: [{ match: ["read"], level: "omit" }] }
+  for (const initiallyInvalid of [true, false]) {
+    await withSession(
+      initiallyInvalid ? invalid : valid,
+      "only",
+      async (session, requests, { root, errors }) => {
+        const path = join(root, "codemode-tool-catalog.json")
+        if (!initiallyInvalid) {
+          await session.prompt("valid configuration")
+          expect(
+            getCurrentTools(requests.at(-1)!).find((tool) => tool.name === "codemode")!.description,
+          ).not.toContain("`read`")
+          writeFileSync(path, JSON.stringify(invalid))
+          await session.bindExtensions({})
+        }
+        expect(errors).toHaveLength(1)
+        for (const prompt of ["invalid first request", "invalid repeated request"]) {
+          await session.prompt(prompt)
+          const native = getCurrentTools(
+            session.sessionManager.buildSessionContext().messages,
+          ).find((tool) => tool.name === "codemode")!.description
+          expect(
+            getCurrentTools(requests.at(-1)!).find((tool) => tool.name === "codemode")!.description,
+          ).toBe(native)
+          expect(errors).toHaveLength(1)
+        }
+        writeFileSync(path, JSON.stringify(valid))
+        await session.prompt("fixed file without reload")
+        expect(
+          getCurrentTools(requests.at(-1)!).find((tool) => tool.name === "codemode")!.description,
+        ).toContain("### `read`")
+        expect(errors).toHaveLength(1)
+        expect(errors.shift()).toContain("codemode-tool-catalog.json")
+        await session.reload()
+        await session.prompt("new load cycle")
+        expect(
+          getCurrentTools(requests.at(-1)!).find((tool) => tool.name === "codemode")!.description,
+        ).not.toContain("`read`")
+      },
+    )
+  }
+})
+
+test("real requests keep catalog generation after range errors and missing minimum Hint", async () => {
+  const errors = spyOn(console, "error").mockImplementation(() => {})
+  const warnings = spyOn(console, "warn").mockImplementation(() => {})
+  try {
+    await withSession(
+      {
+        budget: 0,
+        exposeAllActiveTools: true,
+        rules: [
+          { match: ["read"], minLevel: "full", maxLevel: "hint", priority: 112 },
+          { match: ["missing_hint"], minLevel: "hint", maxLevel: "hint" },
+          { match: ["bash", "edit"], maxLevel: "hint", hint: "Shared summary" },
+        ],
+      },
+      "only",
+      async (session, requests, control) => {
+        const { pi, root } = control
+        pi.registerTool({
+          name: "missing_hint",
+          label: "missing_hint",
+          description: "Tool without an authored snippet",
+          exposure: "codemode",
+          parameters: Type.Object({}),
+          async execute() {
+            return { content: [{ type: "text", text: "ok" }], details: undefined }
+          },
+        })
+        await session.prompt("recover presentation errors")
+        const description = getCurrentTools(requests.at(-1)!).find(
+          (tool) => tool.name === "codemode",
+        )!.description
+        expect(description).not.toContain("missing_hint(args:")
+        expect(description).toContain("`missing_hint`")
+        expect(description).not.toContain("read(args:")
+        expect(description).toContain("`read`")
+        expect(
+          errors.mock.calls.some(([message]) =>
+            String(message).includes("ignoring both level bounds"),
+          ),
+        ).toBe(true)
+        expect(
+          errors.mock.calls.some(
+            ([message]) =>
+              String(message).includes("Tool missing_hint:") &&
+              String(message).includes("using minimum Name"),
+          ),
+        ).toBe(true)
+        expect(
+          warnings.mock.calls.some(([message]) =>
+            String(message).includes("applies to multiple tools"),
+          ),
+        ).toBe(true)
+        await session.prompt("repeat missing hint")
+        expect(
+          errors.mock.calls.filter(([message]) => String(message).includes("Tool missing_hint:")),
+        ).toHaveLength(1)
+        expect(
+          getCurrentTools(requests.at(-1)!).find((tool) => tool.name === "codemode")!.description,
+        ).toContain("`missing_hint`")
+        await session.bindExtensions({})
+        await session.prompt("missing hint in new session start")
+        expect(
+          errors.mock.calls.filter(([message]) => String(message).includes("Tool missing_hint:")),
+        ).toHaveLength(2)
+        await session.prompt("repeat within new session")
+        expect(
+          errors.mock.calls.filter(([message]) => String(message).includes("Tool missing_hint:")),
+        ).toHaveLength(2)
+        const config = JSON.parse(readFileSync(join(root, "codemode-tool-catalog.json"), "utf8"))
+        config.budget = 10000
+        writeFileSync(join(root, "codemode-tool-catalog.json"), JSON.stringify(config))
+        const missing = session.getToolDefinition("missing_hint")!
+        await session.reload()
+        control.pi.registerTool(missing)
+        await session.prompt("shared hints")
+        const expanded = getCurrentTools(requests.at(-1)!).find(
+          (tool) => tool.name === "codemode",
+        )!.description
+        expect(expanded).toContain("### `bash`\nShared summary")
+        expect(expanded).toContain("### `edit`\nShared summary")
+        expect(expanded).not.toContain("missing_hint(args:")
+        expect(expanded).toContain("`missing_hint`")
+        expect(
+          errors.mock.calls.filter(([message]) => String(message).includes("Tool missing_hint:")),
+        ).toHaveLength(3)
+        await session.prompt("repeat after reload")
+        expect(
+          errors.mock.calls.filter(([message]) => String(message).includes("Tool missing_hint:")),
+        ).toHaveLength(3)
+      },
+    )
+  } finally {
+    errors.mockRestore()
+    warnings.mockRestore()
+  }
+})
+
+test("hard Full minima preserve exact native sections despite an insufficient budget", async () => {
+  await withSession(
+    { budget: 0, rules: [{ match: [{ source: "builtin" }], minLevel: "full" }] },
+    "only",
+    async (session, requests) => {
+      await session.prompt("budget")
+      const storedDescription = getCurrentTools(
+        session.sessionManager.buildSessionContext().messages,
+      ).find((t) => t.name === "codemode")!.description
+      const description = getCurrentTools(requests.at(-1)!).find(
+        (t) => t.name === "codemode",
+      )!.description
+      const tools = session.getAllTools()
+      const native = readNativeCatalog(storedDescription, tools)
+      const actual = readNativeCatalog(description, tools)
+      expect(new Set(actual.sections.keys())).toEqual(new Set(native.sections.keys()))
+      for (const [name, text] of actual.sections) expect(text).toBe(native.sections.get(name)!)
+      expect(actual.prefix).toBe(native.prefix)
+    },
+  )
+})
+
+import { readNativeCatalog, renderEntry, sectionCost } from "../src/catalog"
 
 test("custom catalogs keep native permission gates for nested calls", async () => {
   await withSession(
-    { rules: [{ match: ["read"], level: "omit" }] },
+    { rules: [{ match: ["read"], maxLevel: "omit" }] },
     "only",
     async (session, _requests, { pi, script }) => {
       pi.on("tool_call", (event) =>
@@ -508,7 +693,7 @@ for (const mode of ["on", "only"] as const) {
       {
         budget: 0,
         exposeAllActiveTools: true,
-        rules: [{ match: ["mcp__docs__search"], level: "full", forceExpose: true }],
+        rules: [{ match: ["mcp__docs__search"], minLevel: "full" }],
       },
       mode,
       async (session, requests, { pi, script }) => {
@@ -562,7 +747,7 @@ test("explicit defaults and disabled configuration preserve native descriptions"
       enabled: false,
       budget: 0,
       exposeAllActiveTools: true,
-      rules: [{ match: ["read"], level: "omit" }],
+      rules: [{ match: ["read"], maxLevel: "omit" }],
     },
   ]) {
     await withSession(config, "only", async (session, requests) => {
@@ -620,7 +805,8 @@ test("budget-only overrides match native Pi even when structured schemas were or
     session.settingsManager.applyOverrides({ codemode: { inlineBudget: 200 } })
     session.setActiveToolsByName(session.getActiveToolNames())
     expect(actual).toBe(
-      session.agent.state.tools.find((tool) => tool.name === "codemode")!.description,
+      session.agent.state.tools.find((tool) => tool.name === "codemode")!.description +
+        "\n\nOther available tools (inspect with `describeTool(name)`):\n`huge`",
     )
 
     session.settingsManager.applyOverrides({ codemode: { inlineBudget: 100 } })
@@ -698,7 +884,7 @@ test("MCP Full entries render standalone result types and input constraints, and
   await withSession(
     {
       budget: 0,
-      rules: [{ match: [{ namespace: "mcp__docs" }], level: "full", forceExpose: true }],
+      rules: [{ match: [{ namespace: "mcp__docs" }], minLevel: "full" }],
     },
     "only",
     async (session, requests, { pi, script }) => {
@@ -776,7 +962,7 @@ test("disabled built-in Codemode cannot be registered or activated by the catalo
       {
         budget: 0,
         exposeAllActiveTools: true,
-        rules: [{ match: ["read"], level: "full", forceExpose: true }],
+        rules: [{ match: ["read"], minLevel: "full" }],
       },
       "only",
       async (session, requests, { pi }) => {

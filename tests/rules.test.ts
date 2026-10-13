@@ -19,28 +19,32 @@ test("exact selectors use AND, lists use OR and null is distinct from omitted na
   expect(matches(tool, { name: "read", source: "other" })).toBe(false)
   expect(matches(tool, { namespace: null })).toBe(false)
   expect(matches({ ...tool, namespace: undefined }, { namespace: null })).toBe(true)
-  expect(resolveRule(tool, [{ match: ["bash", "read"], level: "name" }])?.level).toBe("name")
+  expect(resolveRule(tool, [{ match: ["bash", "read"], maxLevel: "name" }])?.maxLevel).toBe("name")
 })
 test("Name > Namespace > Source, matching selector specificity and earliest tie", () => {
   const rules = [
-    { match: [{ source: "builtin" }], level: "hint" as const },
-    { match: [{ namespace: "files", source: "builtin" }], level: "name" as const },
-    { match: ["read"], level: "full" as const },
-    { match: [{ name: "read", namespace: "files" }], level: "omit" as const },
-    { match: [{ name: "read", namespace: "files" }], level: "auto" as const },
+    { match: [{ source: "builtin" }], maxLevel: "hint" as const },
+    { match: [{ namespace: "files", source: "builtin" }], maxLevel: "name" as const },
+    { match: ["read"], maxLevel: "full" as const },
+    { match: [{ name: "read", namespace: "files" }], maxLevel: "omit" as const },
+    { match: [{ name: "read", namespace: "files" }], maxLevel: "full" as const },
   ]
-  expect(resolveRule(tool, rules)?.level).toBe("omit")
-  expect(resolveRule(tool, rules.slice(0, 3))?.level).toBe("full")
+  expect(resolveRule(tool, rules)?.maxLevel).toBe("omit")
+  expect(resolveRule(tool, rules.slice(0, 3))?.maxLevel).toBe("full")
   expect(
     resolveRule(tool, [
-      { match: [{ name: "missing", namespace: "files" }, { source: "builtin" }], level: "omit" },
+      { match: [{ name: "missing", namespace: "files" }, { source: "builtin" }], maxLevel: "omit" },
       rules[1]!,
-    ])?.level,
+    ])?.maxLevel,
   ).toBe("name")
 })
 test("invalid fields, wildcards, selectors and nonfinite values fail explicitly", () => {
   for (const value of [
-    { rules: [{ match: ["read"], level: ["full"] }] },
+    { rules: [{ match: ["read"], maxLevel: ["full"] }] },
+    { rules: [{ match: ["read"], level: "full" }] },
+    { rules: [{ match: ["read"], forceExpose: true }] },
+    { rules: [{ match: ["read"], maxLevel: "auto" }] },
+    { rules: [{ match: ["read"], minLevel: "omit" }] },
     null,
     { extra: true },
     { budget: -1 },
@@ -59,16 +63,51 @@ test("invalid fields, wildcards, selectors and nonfinite values fail explicitly"
     { rules: [{ match: ["read"], priority: Infinity }] },
     { budget: NaN },
     { rules: [{ match: ["read"], priority: NaN }] },
-    { rules: [{ match: ["read"], level: "bad" }] },
-    { rules: [{ match: ["read"], hint: "   " }] },
+    { rules: [{ match: ["read"], maxLevel: "bad" }] },
     { rules: [{ match: ["read"], hint: 12 }] },
-    { rules: [{ match: ["read", "edit"], hint: "One summary" }] },
-    { rules: [{ match: [{ namespace: "files" }], hint: "One summary" }] },
-    { rules: [{ match: [{ source: "builtin" }], hint: "One summary" }] },
   ])
     expect(() => validateConfig(value)).toThrow()
 })
-test("custom Hint requires one exact named selector", () => {
+test("valid ranges are preserved; inverted ranges report an error and discard both bounds", () => {
+  const levels = ["name", "hint", "full"] as const
+  for (const [minimum, minLevel] of levels.entries()) {
+    for (const [maximum, maxLevel] of levels.entries()) {
+      const rule = { match: ["read"], minLevel, maxLevel, priority: 100, hint: "Read files" }
+      const config = { rules: [rule] }
+      const errors: string[] = []
+      const result = validateConfig(config, "catalog.json", (message) => errors.push(message))
+      if (minimum > maximum) {
+        expect(result.rules).toEqual([{ match: ["read"], priority: 100, hint: "Read files" }])
+        expect(errors).toEqual([
+          "catalog.json/rules/0/minLevel: exceeds maxLevel; ignoring both level bounds",
+        ])
+        expect(config.rules[0]).toEqual(rule)
+      } else {
+        expect(result).toEqual(config)
+        expect(errors).toEqual([])
+      }
+    }
+    expect(validateConfig({ rules: [{ match: ["read"], minLevel }] })).toEqual({
+      rules: [{ match: ["read"], minLevel }],
+    })
+  }
+  const errors: string[] = []
+  expect(
+    validateConfig(
+      {
+        rules: [{ match: ["read"], minLevel: "name", maxLevel: "omit" }],
+      },
+      "catalog.json",
+      (message) => errors.push(message),
+    ).rules,
+  ).toEqual([{ match: ["read"] }])
+  expect(errors).toHaveLength(1)
+  expect(validateConfig({ rules: [{ match: ["read"], maxLevel: "omit" }] })).toEqual({
+    rules: [{ match: ["read"], maxLevel: "omit" }],
+  })
+})
+
+test("custom Hint accepts blank content and warns without rejecting broad selectors", () => {
   expect(validateConfig({ rules: [{ match: ["read"], hint: "Read files" }] })).toEqual({
     rules: [{ match: ["read"], hint: "Read files" }],
   })
@@ -79,6 +118,25 @@ test("custom Hint requires one exact named selector", () => {
   ).toEqual({
     rules: [{ match: [{ name: "read", source: "builtin" }], hint: "Read source files" }],
   })
+  for (const hint of ["", "   "]) {
+    const config = { rules: [{ match: ["read"], hint }] }
+    expect(validateConfig(config)).toEqual(config)
+  }
+  for (const match of [["read", "edit"], [{ namespace: "files" }], [{ source: "builtin" }]]) {
+    const config = { rules: [{ match, hint: "Shared summary" }] }
+    const diagnostics: unknown[] = []
+    expect(
+      validateConfig(config, "catalog.json", (message, severity) =>
+        diagnostics.push({ message, severity }),
+      ),
+    ).toEqual(config)
+    expect(diagnostics).toEqual([
+      {
+        message: "catalog.json/rules/0/hint: applies to multiple tools or a non-named selector",
+        severity: "warning",
+      },
+    ])
+  }
 })
 test("project fields override user fields; rules replace; untrusted project is not read", () => {
   const root = mkdtempSync(join(tmpdir(), "catalog-config-"))

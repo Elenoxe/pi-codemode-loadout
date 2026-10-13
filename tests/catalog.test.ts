@@ -44,11 +44,196 @@ function readCatalog(description: string, tools: ToolInfo[]) {
   return parsed
 }
 
+test("minimum Hint uses valid content; missing content reports and becomes minimum Name", () => {
+  const item = tool("search")
+  const config = {
+    ...DEFAULT_CONFIG,
+    budget: 0,
+    rules: [{ match: [item.name], minLevel: "hint" as const }],
+  }
+  expect(
+    readCatalog(createCatalog(native([item]), config, options([item])), [item]).sections.get(
+      item.name,
+    ),
+  ).toBe(renderEntry(item, "hint"))
+  for (const hint of ["", "   "]) {
+    const errors: string[] = []
+    const sections = readCatalog(
+      createCatalog(
+        native([item]),
+        {
+          ...config,
+          budget: 10000,
+          rules: [{ match: [item.name], minLevel: "hint", maxLevel: "hint", hint }],
+        },
+        {
+          ...options([item]),
+          reportDiagnostic: (message) => errors.push(message),
+        },
+      ),
+      [item],
+    ).sections
+    expect(sections.get(item.name)).toBe(toolHeading(item.name))
+    expect(errors).toEqual([])
+  }
+  for (const snippet of [undefined, "", "  "]) {
+    item.promptSnippet = snippet
+    for (const maxLevel of [undefined, "hint" as const]) {
+      const errors: string[] = []
+      const sections = readCatalog(
+        createCatalog(
+          native([item]),
+          {
+            ...config,
+            rules: [{ match: [item.name], minLevel: "hint", maxLevel }],
+          },
+          {
+            ...options([item]),
+            reportDiagnostic: (message) => errors.push(message),
+          },
+        ),
+        [item],
+      ).sections
+      expect(sections.get(item.name)).toBe(toolHeading(item.name))
+      expect(errors).toEqual([
+        'Tool search: minLevel "hint" has no non-empty hint or promptSnippet; using minimum Name',
+      ])
+      const expanded = readCatalog(
+        createCatalog(
+          native([item]),
+          {
+            ...config,
+            budget: 10000,
+            rules: [{ match: [item.name], minLevel: "hint", maxLevel }],
+          },
+          {
+            ...options([item]),
+            reportDiagnostic: () => {},
+          },
+        ),
+        [item],
+      ).sections
+      expect(expanded.get(item.name)).toBe(
+        maxLevel === "hint" ? toolHeading(item.name) : renderEntry(item, "full"),
+      )
+    }
+    const overridden = {
+      ...config,
+      rules: [{ match: [item.name], minLevel: "hint" as const, hint: "Custom summary" }],
+    }
+    expect(
+      readCatalog(createCatalog(native([item]), overridden, options([item])), [item]).sections.get(
+        item.name,
+      ),
+    ).toBe("### `search`\nCustom summary")
+  }
+  expect(() =>
+    createCatalog(
+      native([item]),
+      {
+        ...config,
+        rules: [{ match: [item.name], minLevel: "full" }],
+      },
+      options([item]),
+    ),
+  ).not.toThrow()
+})
+
+test("ceilings cap automatic upgrades and hard minima do not cap them", () => {
+  const item = tool("search")
+  for (const maxLevel of ["name", "hint", "full"] as const) {
+    const config = { ...DEFAULT_CONFIG, budget: 10000, rules: [{ match: [item.name], maxLevel }] }
+    expect(
+      readCatalog(createCatalog(native([item]), config, options([item])), [item]).sections.get(
+        item.name,
+      ),
+    ).toBe(renderEntry(item, maxLevel))
+  }
+  for (const minLevel of ["name", "hint"] as const) {
+    const config = { ...DEFAULT_CONFIG, budget: 10000, rules: [{ match: [item.name], minLevel }] }
+    expect(
+      readCatalog(createCatalog(native([item]), config, options([item])), [item]).sections.get(
+        item.name,
+      ),
+    ).toBe(renderEntry(item, "full"))
+  }
+})
+
+test("upgrades use incremental rather than total Full costs and continue after oversized Full", () => {
+  const expensive = tool("expensive", "x".repeat(300))
+  const cheap = tool("cheap")
+  expensive.promptSnippet = "x".repeat(400)
+  const tools = [cheap, expensive]
+  const coverageCost = tools.reduce((sum, item) => sum + sectionCost(renderEntry(item, "hint")), 0)
+  const delta =
+    sectionCost(renderEntry(expensive, "full")) - sectionCost(renderEntry(expensive, "hint"))
+  expect(delta).toBeLessThan(
+    sectionCost(renderEntry(cheap, "full")) - sectionCost(renderEntry(cheap, "hint")),
+  )
+  const sections = readCatalog(
+    createCatalog(
+      native(tools),
+      {
+        ...DEFAULT_CONFIG,
+        budget: coverageCost + delta,
+      },
+      options(tools),
+    ),
+    tools,
+  ).sections
+  expect(sections.get("expensive")).toBe(renderEntry(expensive, "full"))
+  expect(sections.get("cheap")).toBe(renderEntry(cheap, "hint"))
+
+  const huge = tool("huge", "x".repeat(2000))
+  const small = tool("small")
+  const budget = sectionCost(renderEntry(huge, "hint")) + sectionCost(renderEntry(small, "full"))
+  const continued = readCatalog(
+    createCatalog(
+      native([huge, small]),
+      {
+        ...DEFAULT_CONFIG,
+        budget,
+      },
+      options([huge, small]),
+    ),
+    [huge, small],
+  ).sections
+  expect(continued.get("huge")).toBe(renderEntry(huge, "hint"))
+  expect(continued.get("small")).toBe(renderEntry(small, "full"))
+})
+
+test("already-maximal minima do not consume namespace upgrade turns", () => {
+  const fixed = tool("fixed"),
+    first = tool("first"),
+    second = tool("second")
+  second.namespace = { name: "server" }
+  const tools = [fixed, first, second]
+  const budget =
+    sectionCost(renderEntry(fixed, "full")) +
+    sectionCost(renderEntry(first, "full")) +
+    sectionCost(renderEntry(second, "hint"))
+  const sections = readCatalog(
+    createCatalog(
+      native(tools),
+      {
+        ...DEFAULT_CONFIG,
+        budget,
+        rules: [{ match: ["fixed"], minLevel: "full" }],
+      },
+      options(tools),
+    ),
+    tools,
+  ).sections
+  expect(sections.get("fixed")).toBe(renderEntry(fixed, "full"))
+  expect(sections.get("first")).toBe(renderEntry(first, "full"))
+  expect(sections.get("second")).toBe(renderEntry(second, "hint"))
+})
+
 test("Full preserves native declarations and renders output types and input constraints", () => {
   const item = tool("search")
   expect(renderEntry(item, "full", "original exact bytes")).toBe("original exact bytes")
   expect(renderEntry(item, "full")).toContain("Keep paths scoped.")
-  expect(renderEntry(item, "full")).toContain("Promise<string>")
+  expect(renderEntry(item, "full")).toContain("Promise<unknown>")
   expect(renderEntry(item, "full")).toContain("path: string")
   item.outputSchema = {
     type: "object",
@@ -100,8 +285,8 @@ test("configured hints override author snippets; tools without snippets degrade 
       ...DEFAULT_CONFIG,
       budget: 1000,
       rules: [
-        { match: ["named"], level: "hint", hint: "Custom summary" },
-        { match: ["missing"], level: "hint" },
+        { match: ["named"], maxLevel: "hint", hint: "Custom summary" },
+        { match: ["missing"], maxLevel: "hint" },
       ],
     },
     options(tools),
@@ -116,7 +301,7 @@ test("configured hints override author snippets; tools without snippets degrade 
   const budget = sectionCost(nameList(["missing"]))
   const automatic = createCatalog(
     native([missing]),
-    { ...DEFAULT_CONFIG, budget, rules: [{ match: ["missing"], level: "auto" }] },
+    { ...DEFAULT_CONFIG, budget, rules: [{ match: ["missing"] }] },
     options([missing]),
   )
   expect(readCatalog(automatic, [missing]).sections.get("missing")).toBe(toolHeading("missing"))
@@ -129,7 +314,7 @@ test("catalog retains native instructions, applies fixed levels and excludes Omi
       ...DEFAULT_CONFIG,
       rules: tools.map((t) => ({
         match: [t.name],
-        level: t.name as "full" | "hint" | "name" | "omit",
+        maxLevel: t.name as "full" | "hint" | "name" | "omit",
       })),
     },
     options(tools),
@@ -152,30 +337,35 @@ test("catalog parser does not split headings inside fenced descriptions", () => 
   expect(result.sections.get("b")).toBe(toolHeading("b") + "\nother")
 })
 
-test("Auto covers tools with Hint before Full; omitted and fixed Full never become Hint", () => {
+test("default allocation covers Hint, then Full, with Name and omission at tight budgets", () => {
   const item = tool("search", "Description " + "x".repeat(300))
   const description = native([item])
   const hintCost = Math.ceil(renderEntry(item, "hint").length / 4)
   const config = {
     ...DEFAULT_CONFIG,
     budget: hintCost,
-    rules: [{ match: ["search"], level: "auto" as const }],
+    rules: [{ match: ["search"] }],
   }
   expect(
     readCatalog(createCatalog(description, config, options([item])), [item]).sections.get("search"),
   ).toBe(renderEntry(item, "hint"))
-  for (const level of [undefined, "full" as const]) {
+  for (const rules of [[], [{ match: ["search"] }], [{ match: ["search"], priority: 100 }]]) {
     expect(
-      readNativeCatalog(
-        createCatalog(
-          description,
-          { ...config, rules: [{ match: ["search"], level }] },
-          options([item]),
-        ),
-        [item],
-      ).sections.size,
-    ).toBe(0)
+      readCatalog(createCatalog(description, { ...config, rules }, options([item])), [
+        item,
+      ]).sections.get("search"),
+    ).toBe(renderEntry(item, "hint"))
   }
+  expect(
+    readCatalog(
+      createCatalog(
+        description,
+        { ...config, rules: [{ match: ["search"], minLevel: "full" }] },
+        options([item]),
+      ),
+      [item],
+    ).sections.get("search"),
+  ).toBe(renderEntry(item, "full"))
   item.promptSnippet = "Long authored summary. ".repeat(10)
   const nameCost = sectionCost(nameList([item.name]))
   expect(
@@ -190,70 +380,84 @@ test("Auto covers tools with Hint before Full; omitted and fixed Full never beco
   ).toBe(0)
 
   const tools = [tool("a"), tool("b"), tool("c")]
-  const hintBudget = tools.reduce((sum, item) => sum + sectionCost(renderEntry(item, "hint")), 0)
-  const upgradeCost =
-    sectionCost(renderEntry(tools[0]!, "full")) - sectionCost(renderEntry(tools[0]!, "hint"))
-  for (const guarantee of ["none", "force", "global"]) {
-    const layeredConfig = {
+  const fullCost = sectionCost(renderEntry(tools[0]!, "full"))
+  for (const guarantee of ["none", "minimum", "global"]) {
+    const config = {
       ...DEFAULT_CONFIG,
-      budget: hintBudget + upgradeCost - 1,
+      budget: fullCost + (guarantee === "none" ? 0 : sectionCost(nameList(["b", "c"]))),
       exposeAllActiveTools: guarantee === "global",
       rules: tools.map((item) => ({
         match: [item.name],
-        level: "auto" as const,
         priority: item.name === "a" ? 10 : 0,
-        forceExpose: guarantee === "force",
+        minLevel: guarantee === "minimum" ? ("name" as const) : undefined,
       })),
     }
-    const hints = readCatalog(
-      createCatalog(native(tools), layeredConfig, options(tools)),
+    const sections = readCatalog(
+      createCatalog(native(tools), config, options(tools)),
       tools,
     ).sections
-    for (const item of tools) expect(hints.get(item.name)).toBe(renderEntry(item, "hint"))
-    const upgraded = readCatalog(
-      createCatalog(
-        native(tools),
-        { ...layeredConfig, budget: layeredConfig.budget + 1 },
-        options(tools),
-      ),
-      tools,
-    ).sections
-    for (const [index, item] of tools.entries())
-      expect(upgraded.get(item.name)).toBe(renderEntry(item, index === 0 ? "full" : "hint"))
+    expect(sections.get("a")).toBe(renderEntry(tools[0]!, "full"))
+    for (const item of tools.slice(1)) {
+      expect(sections.get(item.name)).toBe(
+        guarantee === "none" ? undefined : toolHeading(item.name),
+      )
+    }
   }
 })
-test("priority precedes native namespace round-robin and cheapest-first within a group", () => {
+test("priority upgrades precede lower coverage; cheapest increments win within a namespace", () => {
   const big = tool("big", "x".repeat(500)),
     small = tool("small"),
     ns = tool("ns")
   ns.namespace = { name: "server", description: "Server tools" }
   const tools = [big, small, ns]
-  const bigCost = Math.ceil(renderEntry(big, "full").length / 4)
-  const result = createCatalog(
+  const bigCost = sectionCost(renderEntry(big, "full"))
+  const prioritized = createCatalog(
     native(tools),
-    { ...DEFAULT_CONFIG, budget: bigCost, rules: [{ match: ["big"], priority: 200 }] },
+    {
+      ...DEFAULT_CONFIG,
+      budget: bigCost,
+      rules: [{ match: ["big"], priority: 200 }],
+    },
     options(tools),
   )
-  expect([...readNativeCatalog(result, tools).sections.keys()]).toEqual(["big"])
-  const smallCost = Math.ceil(renderEntry(small, "full").length / 4)
-  const plain = createCatalog(
-    native(tools),
-    { ...DEFAULT_CONFIG, budget: smallCost },
-    options(tools),
-  )
-  expect([...readNativeCatalog(plain, tools).sections.keys()]).toEqual(["small"])
-  const negative = createCatalog(
-    native(tools),
-    { ...DEFAULT_CONFIG, budget: smallCost, rules: [{ match: ["small"], priority: -1 }] },
-    options(tools),
-  )
-  expect([...readNativeCatalog(negative, tools).sections.keys()]).toEqual(["ns"])
-  expect(plain).toContain("## server (tools not listed)\nServer tools")
+  expect([...readCatalog(prioritized, tools).sections.keys()]).toEqual(["big"])
+  const hintBudget = tools.reduce((sum, item) => sum + sectionCost(renderEntry(item, "hint")), 0)
+  const increment =
+    sectionCost(renderEntry(small, "full")) - sectionCost(renderEntry(small, "hint"))
+  const sections = readCatalog(
+    createCatalog(
+      native(tools),
+      {
+        ...DEFAULT_CONFIG,
+        budget: hintBudget + increment,
+      },
+      options(tools),
+    ),
+    tools,
+  ).sections
+  expect(sections.get("small")).toBe(renderEntry(small, "full"))
+  expect(sections.get("big")).toBe(renderEntry(big, "hint"))
+  expect(sections.get("ns")).toBe(renderEntry(ns, "hint"))
+  const negative = readCatalog(
+    createCatalog(
+      native(tools),
+      {
+        ...DEFAULT_CONFIG,
+        budget: hintBudget + increment,
+        rules: [{ match: ["small"], priority: -1 }],
+      },
+      options(tools),
+    ),
+    tools,
+  ).sections
+  expect(negative.get("ns")).toBe(renderEntry(ns, "full"))
+  expect(negative.get("big")).toBe(renderEntry(big, "hint"))
+  expect(negative.get("small")).toBe(renderEntry(small, "hint"))
 })
 test("shared budget charges actual entry text and is deterministic across boundaries", () => {
   const tools = [tool("a"), tool("b"), tool("c", "x".repeat(500))]
   for (let budget = 0; budget < 300; budget += 7) {
-    const config = { ...DEFAULT_CONFIG, budget, rules: [{ match: ["c"], level: "auto" as const }] }
+    const config = { ...DEFAULT_CONFIG, budget, rules: [{ match: ["c"] }] }
     const result = createCatalog(native(tools), config, options(tools))
     const [declarations, names] = result.split("\n\n" + NAME_LIST_HEADER)
     const sections = readNativeCatalog(declarations!, tools).sections
@@ -265,41 +469,37 @@ test("shared budget charges actual entry text and is deterministic across bounda
   }
   const inherited = createCatalog(
     native(tools),
-    { ...DEFAULT_CONFIG, rules: [{ match: ["a"], level: "full" }] },
+    { ...DEFAULT_CONFIG, rules: [{ match: ["a"], maxLevel: "full" }] },
     options(tools, 0),
   )
   expect(readNativeCatalog(inherited, tools).sections.size).toBe(0)
 })
 
-test("fixed forced formats exceed budget, Auto and unspecified forced levels reserve Name, Omit wins", () => {
-  const tools = [
-    tool("full"),
-    tool("hint"),
-    tool("name"),
-    tool("auto"),
-    tool("unspecified"),
-    tool("omit"),
-    tool("ordinary"),
-  ]
-  const config = {
-    ...DEFAULT_CONFIG,
-    budget: 0,
-    rules: tools.slice(0, 6).map((t) => ({
-      match: [t.name],
-      forceExpose: true,
-      level:
-        t.name === "unspecified"
-          ? undefined
-          : (t.name as "full" | "hint" | "name" | "auto" | "omit"),
-    })),
-  }
-  const result = readCatalog(createCatalog(native(tools), config, options(tools)), tools).sections
+test("hard minima and fixed formats exceed budget; Omit excludes even globally guaranteed tools", () => {
+  const tools = [tool("full"), tool("hint"), tool("name"), tool("ordinary"), tool("omit")]
+  const result = readCatalog(
+    createCatalog(
+      native(tools),
+      {
+        ...DEFAULT_CONFIG,
+        budget: 0,
+        exposeAllActiveTools: true,
+        rules: [
+          { match: ["full"], minLevel: "full" },
+          { match: ["hint"], minLevel: "hint", maxLevel: "hint" },
+          { match: ["name"], minLevel: "name", maxLevel: "name" },
+          { match: ["omit"], maxLevel: "omit" },
+        ],
+      },
+      options(tools),
+    ),
+    tools,
+  ).sections
   expect(result.get("full")).toBe(renderEntry(tools[0]!, "full"))
   expect(result.get("hint")).toBe(renderEntry(tools[1]!, "hint"))
-  for (const name of ["name", "auto", "unspecified"])
-    expect(result.get(name)).toBe(toolHeading(name))
+  expect(result.get("name")).toBe(toolHeading("name"))
+  expect(result.get("ordinary")).toBe(toolHeading("ordinary"))
   expect(result.has("omit")).toBe(false)
-  expect(result.has("ordinary")).toBe(false)
 })
 test("reserved content upgrades using only the cost difference", () => {
   const item = tool("search"),
@@ -311,7 +511,7 @@ test("reserved content upgrades using only the cost difference", () => {
     {
       ...DEFAULT_CONFIG,
       budget: fullCost,
-      rules: [{ match: ["search"], level: "auto", forceExpose: true }],
+      rules: [{ match: ["search"], minLevel: "name" }],
     },
     options([item]),
   )
@@ -326,7 +526,6 @@ test("reserved content upgrades using only the cost difference", () => {
     exposeAllActiveTools: true,
     rules: tools.map((entry) => ({
       match: [entry.name],
-      level: "auto" as const,
       priority: entry.name === "a" ? 10 : 0,
     })),
   }
@@ -358,9 +557,9 @@ test("global guarantee covers only eligible active tools and overrides fixed lev
     budget: 0,
     exposeAllActiveTools: true,
     rules: [
-      { match: ["full"], level: "full" as const },
-      { match: ["hint"], level: "hint" as const },
-      { match: ["omit"], level: "omit" as const },
+      { match: ["full"], maxLevel: "full" as const },
+      { match: ["hint"], maxLevel: "hint" as const },
+      { match: ["omit"], maxLevel: "omit" as const },
     ],
   }
   const sections = readCatalog(createCatalog(native(tools), config, opts), tools).sections
@@ -372,7 +571,7 @@ test("forced minima reserve budget before high-priority optional tools", () => {
   const forced = tool("forced"),
     optional = tool("optional"),
     tools = [optional, forced]
-  const budget = Math.ceil(renderEntry(optional, "full").length / 4)
+  const budget = sectionCost(nameList(["forced"])) - 1
   const sections = readCatalog(
     createCatalog(
       native(tools),
@@ -380,8 +579,8 @@ test("forced minima reserve budget before high-priority optional tools", () => {
         ...DEFAULT_CONFIG,
         budget,
         rules: [
-          { match: ["forced"], forceExpose: true },
-          { match: ["optional"], priority: 1000 },
+          { match: ["forced"], minLevel: "name" },
+          { match: ["optional"], maxLevel: "full", priority: 1000 },
         ],
       },
       options(tools),
@@ -404,8 +603,7 @@ test("on mode excludes Direct even when forced or globally guaranteed; only requ
     rules: [
       {
         match: ["direct", "inactive", "mcp__docs__direct"],
-        level: "full" as const,
-        forceExpose: true,
+        minLevel: "full" as const,
       },
     ],
   }
@@ -427,8 +625,13 @@ test("Deferred MCP requires explicit presentation selectors; generic source and 
   for (const rules of [
     [],
     [{ match: ["mcp__docs__search"], priority: 200 }],
-    [{ match: [{ source: "builtin" }], level: "hint" as const }],
-    [{ match: [{ namespace: null }], level: "hint" as const }],
+    [{ match: [mcp.name], maxLevel: "full" as const }],
+    [{ match: [mcp.name], maxLevel: "hint" as const }],
+    [{ match: [mcp.name], maxLevel: "name" as const }],
+    [{ match: [mcp.name], hint: "Search documentation" }],
+    [{ match: [{ namespace: "mcp__docs" }], maxLevel: "full" as const }],
+    [{ match: [{ source: "builtin" }], maxLevel: "hint" as const }],
+    [{ match: [{ namespace: null }], maxLevel: "hint" as const }],
   ]) {
     expect(
       readNativeCatalog(
@@ -444,7 +647,7 @@ test("Deferred MCP requires explicit presentation selectors; generic source and 
   for (const match of [["mcp__docs__search"], [{ namespace: "mcp__docs" }]]) {
     const result = createCatalog(
       "intro",
-      { ...DEFAULT_CONFIG, budget: 0, rules: [{ match, level: "auto", forceExpose: true }] },
+      { ...DEFAULT_CONFIG, budget: 0, rules: [{ match, minLevel: "name" }] },
       options(tools),
     )
     expect([...readCatalog(result, tools).sections.keys()]).toEqual([mcp.name])
@@ -455,7 +658,7 @@ test("Deferred MCP requires explicit presentation selectors; generic source and 
     readNativeCatalog(
       createCatalog(
         "intro",
-        { ...DEFAULT_CONFIG, rules: [{ match: [mcp.name], level: "full", forceExpose: true }] },
+        { ...DEFAULT_CONFIG, rules: [{ match: [mcp.name], minLevel: "full" }] },
         options(tools),
       ),
       tools,
@@ -475,30 +678,33 @@ test("native Full descriptions containing real catalog headings are preserved in
   expect(parsed.sections.get("a")).toBe(renderEntry(a, "full"))
   const result = createCatalog(
     native(tools),
-    { ...DEFAULT_CONFIG, rules: [{ match: ["b"], level: "omit" }] },
+    { ...DEFAULT_CONFIG, rules: [{ match: ["b"], maxLevel: "omit" }] },
     options(tools),
   )
   expect(readNativeCatalog(result, tools).sections.get("a")).toBe(renderEntry(a, "full"))
 })
 
-test("unspecified forced level never selects Hint and source selectors can explicitly select MCP", () => {
+test("Name minimum can upgrade to Hint and source selectors can explicitly select MCP", () => {
   const item = tool("search", "x".repeat(500))
   const config = {
     ...DEFAULT_CONFIG,
-    budget: Math.ceil(renderEntry(item, "hint").length / 4),
-    rules: [{ match: [item.name], forceExpose: true }],
+    budget: 100,
+    rules: [{ match: [item.name], minLevel: "name" as const }],
   }
   expect(
     readCatalog(createCatalog(native([item]), config, options([item])), [item]).sections.get(
       item.name,
     ),
-  ).toBe(toolHeading(item.name))
+  ).toBe(renderEntry(item, "hint"))
   const mcp = tool("mcp__docs__search")
   mcp.exposure = "deferred"
   mcp.sourceInfo.source = "npm:docs-adapter"
   const result = createCatalog(
     "intro",
-    { ...DEFAULT_CONFIG, rules: [{ match: [{ source: "npm:docs-adapter" }], level: "hint" }] },
+    {
+      ...DEFAULT_CONFIG,
+      rules: [{ match: [{ source: "npm:docs-adapter" }], minLevel: "name", maxLevel: "hint" }],
+    },
     options([mcp]),
   )
   expect(readNativeCatalog(result, [mcp]).sections.get(mcp.name)).toBe(renderEntry(mcp, "hint"))
@@ -509,10 +715,20 @@ test("same-priority namespaces round-robin before a namespace is completed", () 
     c = tool("c"),
     tools = [a, b, c]
   c.namespace = { name: "server" }
-  const budget =
-    Math.ceil(renderEntry(a, "full").length / 4) + Math.ceil(renderEntry(c, "full").length / 4)
-  const result = createCatalog(native(tools), { ...DEFAULT_CONFIG, budget }, options(tools))
-  expect([...readNativeCatalog(result, tools).sections.keys()]).toEqual(["a", "c"])
+  const coverageBudget = sectionCost(renderEntry(a, "hint")) + sectionCost(renderEntry(c, "hint"))
+  const covered = readCatalog(
+    createCatalog(
+      native(tools),
+      {
+        ...DEFAULT_CONFIG,
+        budget: coverageBudget,
+        rules: [{ match: [{ source: "test" }], maxLevel: "hint" }],
+      },
+      options(tools),
+    ),
+    tools,
+  ).sections
+  expect([...covered.keys()]).toEqual(["a", "c"])
 
   const hintBudget = tools.reduce((sum, item) => sum + sectionCost(renderEntry(item, "hint")), 0)
   const upgradeCost = sectionCost(renderEntry(a, "full")) - sectionCost(renderEntry(a, "hint"))
@@ -525,7 +741,6 @@ test("same-priority namespaces round-robin before a namespace is completed", () 
           budget: hintBudget + 2 * upgradeCost,
           rules: tools.map((item) => ({
             match: [item.name],
-            level: "auto" as const,
             priority: boostPriority && item.name === "b" ? 10 : 0,
           })),
         },
@@ -540,18 +755,22 @@ test("same-priority namespaces round-robin before a namespace is completed", () 
   }
 })
 
-test("Name-only catalogs omit empty nested tools and namespaces, including missing forced Hints", () => {
+test("Name-only catalogs omit empty groups when optional Hints are missing", () => {
   const tools = [tool("ask_user_question"), tool("mcp__docs__search")]
   tools[0]!.promptSnippet = "   "
   delete tools[1]!.promptSnippet
   tools[1]!.namespace = { name: "mcp__docs", description: "Documentation" }
-  for (const forceExpose of [false, true]) {
+  for (const guaranteed of [false, true]) {
     const result = createCatalog(
       native(tools),
       {
         ...DEFAULT_CONFIG,
-        budget: forceExpose ? 0 : 1000,
-        rules: tools.map((item) => ({ match: [item.name], level: "hint", forceExpose })),
+        budget: guaranteed ? 0 : 1000,
+        rules: tools.map((item) => ({
+          match: [item.name],
+          maxLevel: "hint",
+          minLevel: guaranteed ? "name" : undefined,
+        })),
       },
       options(tools),
     )
@@ -596,9 +815,9 @@ test("namespace listing counts include Names and compact names retain registrati
       ...DEFAULT_CONFIG,
       budget,
       rules: [
-        { match: [named.name], level: "name", forceExpose: true },
-        { match: [hint.name], level: "hint", forceExpose: true },
-        { match: [full.name], level: "full", forceExpose: true },
+        { match: [named.name], minLevel: "name", maxLevel: "name" },
+        { match: [hint.name], minLevel: "name", maxLevel: "hint" },
+        { match: [full.name], minLevel: "full" },
       ],
     },
     options(tools),
@@ -616,10 +835,7 @@ test("catalogs without Names omit the compact list, including Auto upgrades to F
     native(tools),
     {
       ...DEFAULT_CONFIG,
-      rules: [
-        { match: ["hint"], level: "hint" },
-        { match: ["auto"], level: "auto" },
-      ],
+      rules: [{ match: ["hint"], maxLevel: "hint" }, { match: ["auto"] }],
     },
     options(tools),
   )
