@@ -261,6 +261,7 @@ export function createCatalog(
   const tools = candidateTools(options, config)
   const entries = tools.map((tool): Entry => {
     const rule = resolveRule(tool, config.rules)
+    let full: string | undefined
     return {
       tool,
       rule,
@@ -273,7 +274,9 @@ export function createCatalog(
           : undefined,
       preferred: rule?.level === "hint" || rule?.level === "name" ? rule.level : "full",
       texts: {
-        full: renderEntry(tool, "full", native.sections.get(tool.name)),
+        get full() {
+          return (full ??= renderEntry(tool, "full", native.sections.get(tool.name)))
+        },
         hint: renderEntry(tool, "hint", undefined, rule?.hint),
         name: renderEntry(tool, "name"),
       },
