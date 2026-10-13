@@ -51,6 +51,13 @@ test("invalid fields, wildcards, selectors and nonfinite values fail explicitly"
     { rules: [{ match: [{}] }] },
     { rules: [{ match: ["*"] }] },
     { rules: [{ match: [{ namespace: "mcp__*" }] }] },
+    { rules: [{ match: ["read"], extra: true }] },
+    { rules: [{ match: [{ name: "read", extra: true }] }] },
+    { rules: [{ match: [""] }] },
+    { rules: [{ match: [" \n\t"] }] },
+    { rules: [{ match: [{ source: "*" }] }] },
+    { rules: [{ match: ["read"], priority: Infinity }] },
+    { budget: NaN },
     { rules: [{ match: ["read"], priority: NaN }] },
     { rules: [{ match: ["read"], level: "bad" }] },
   ])

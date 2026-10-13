@@ -1,24 +1,47 @@
 import { readFileSync } from "node:fs"
 import { join } from "node:path"
+import { Type, type Static } from "typebox"
+import { Value } from "typebox/value"
 
-export type Level = "auto" | "full" | "hint" | "name" | "omit"
-export interface ToolSelector {
-  name?: string
-  namespace?: string | null
-  source?: string
-}
-export interface ToolRule {
-  match: (string | ToolSelector)[]
-  level?: Level
-  priority?: number
-  forceExpose?: boolean
-}
-export interface CatalogConfig {
-  enabled: boolean
-  budget: number | "inherit"
-  exposeAllActiveTools: boolean
-  rules: ToolRule[]
-}
+const ExactStringSchema = Type.String({ pattern: "^(?!\\s*$)[^*]+$" })
+const LevelSchema = Type.Union([
+  Type.Literal("auto"),
+  Type.Literal("full"),
+  Type.Literal("hint"),
+  Type.Literal("name"),
+  Type.Literal("omit"),
+])
+const ToolSelectorSchema = Type.Object(
+  {
+    name: Type.Optional(ExactStringSchema),
+    namespace: Type.Optional(Type.Union([ExactStringSchema, Type.Null()])),
+    source: Type.Optional(ExactStringSchema),
+  },
+  { additionalProperties: false, minProperties: 1 },
+)
+const ToolRuleSchema = Type.Object(
+  {
+    match: Type.Array(Type.Union([ExactStringSchema, ToolSelectorSchema]), { minItems: 1 }),
+    level: Type.Optional(LevelSchema),
+    priority: Type.Optional(Type.Number()),
+    forceExpose: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: false },
+)
+const CatalogConfigSchema = Type.Object(
+  {
+    enabled: Type.Boolean(),
+    budget: Type.Union([Type.Number({ minimum: 0 }), Type.Literal("inherit")]),
+    exposeAllActiveTools: Type.Boolean(),
+    rules: Type.Array(ToolRuleSchema),
+  },
+  { additionalProperties: false },
+)
+const PartialConfigSchema = Type.Partial(CatalogConfigSchema, { additionalProperties: false })
+export type Level = Static<typeof LevelSchema>
+export type ToolSelector = Static<typeof ToolSelectorSchema>
+export type ToolRule = Static<typeof ToolRuleSchema>
+export type CatalogConfig = Static<typeof CatalogConfigSchema>
 export const DEFAULT_CONFIG: CatalogConfig = {
   enabled: true,
   budget: "inherit",
@@ -27,70 +50,12 @@ export const DEFAULT_CONFIG: CatalogConfig = {
 }
 export const CONFIG_FILENAME = "codemode-tool-catalog.json"
 
-function object(value: unknown, path: string): Record<string, unknown> {
-  if (value === null || typeof value !== "object" || Array.isArray(value))
-    throw new Error(`${path}: expected an object`)
-  return value as Record<string, unknown>
-}
-function keys(value: Record<string, unknown>, allowed: string[], path: string): void {
-  for (const key of Object.keys(value)) {
-    if (!allowed.includes(key)) throw new Error(`${path}.${key}: unknown field`)
-  }
-}
-function exact(value: unknown, path: string): void {
-  if (typeof value !== "string" || !value.trim() || value.includes("*"))
-    throw new Error(`${path}: expected a nonempty exact string (wildcards are not supported)`)
-}
 export function validateConfig(value: unknown, path = "config"): Partial<CatalogConfig> {
-  const config = object(value, path)
-  keys(config, ["enabled", "budget", "exposeAllActiveTools", "rules"], path)
-  for (const key of ["enabled", "exposeAllActiveTools"]) {
-    if (key in config && typeof config[key] !== "boolean")
-      throw new Error(`${path}.${key}: expected boolean`)
+  if (!Value.Check(PartialConfigSchema, value)) {
+    const error = Value.Errors(PartialConfigSchema, value)[0]!
+    throw new Error(`${path}${error.instancePath}: ${error.message}`)
   }
-  if (
-    "budget" in config &&
-    config.budget !== "inherit" &&
-    (typeof config.budget !== "number" || !Number.isFinite(config.budget) || config.budget < 0)
-  )
-    throw new Error(`${path}.budget: expected a finite nonnegative number or "inherit"`)
-  if ("rules" in config) {
-    if (!Array.isArray(config.rules)) throw new Error(`${path}.rules: expected an array`)
-    for (const [index, value] of config.rules.entries()) {
-      const location = `${path}.rules[${index}]`
-      const rule = object(value, location)
-      keys(rule, ["match", "level", "priority", "forceExpose"], location)
-      if (!Array.isArray(rule.match) || rule.match.length === 0)
-        throw new Error(`${location}.match: expected a nonempty array`)
-      for (const [index, value] of rule.match.entries()) {
-        const target = `${location}.match[${index}]`
-        if (typeof value === "string") exact(value, target)
-        else {
-          const selector = object(value, target)
-          keys(selector, ["name", "namespace", "source"], target)
-          if (Object.keys(selector).length === 0) throw new Error(`${target}: empty selector`)
-          for (const key of Object.keys(selector)) {
-            if (key !== "namespace" || selector[key] !== null)
-              exact(selector[key], `${target}.${key}`)
-          }
-        }
-      }
-      if (
-        "level" in rule &&
-        (typeof rule.level !== "string" ||
-          !["auto", "full", "hint", "name", "omit"].includes(rule.level))
-      )
-        throw new Error(`${location}.level: invalid level`)
-      if (
-        "priority" in rule &&
-        (typeof rule.priority !== "number" || !Number.isFinite(rule.priority))
-      )
-        throw new Error(`${location}.priority: expected a finite number`)
-      if ("forceExpose" in rule && typeof rule.forceExpose !== "boolean")
-        throw new Error(`${location}.forceExpose: expected boolean`)
-    }
-  }
-  return config as Partial<CatalogConfig>
+  return value
 }
 
 function readConfig(path: string): Partial<CatalogConfig> {

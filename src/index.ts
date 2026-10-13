@@ -1,5 +1,7 @@
 import type { AgentMessage } from "@earendil-works/pi-agent-core"
 import { AgentSession, getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent"
+import { Type } from "typebox"
+import { Value } from "typebox/value"
 import { isNativeConfig, loadConfig, type CatalogConfig } from "./config"
 import { createCatalog, type CatalogToolInfo } from "./catalog"
 
@@ -57,8 +59,7 @@ export default function codemodeToolCatalog(pi: ExtensionAPI): void {
           tools,
           active,
           mode: settings?.mode === "only" ? "only" : "on",
-          inlineBudget:
-            typeof budget === "number" && Number.isFinite(budget) && budget >= 0 ? budget : 3000,
+          inlineBudget: Value.Check(Type.Number({ minimum: 0 }), budget) ? budget : 3000,
         }),
       ),
     }
