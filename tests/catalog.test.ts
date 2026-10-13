@@ -23,7 +23,7 @@ const options = (tools: ToolInfo[], inlineBudget = 10000) => ({
   mode: "only" as const,
 })
 
-test("Full preserves original declarations and guidelines and renders complete output types", () => {
+test("Full preserves native declarations and renders output types and input constraints", () => {
   const item = tool("search")
   expect(renderEntry(item, "full", "original exact bytes")).toBe("original exact bytes")
   expect(renderEntry(item, "full")).toContain("Keep paths scoped.")
@@ -35,6 +35,20 @@ test("Full preserves original declarations and guidelines and renders complete o
     required: ["answer"],
   }
   expect(renderEntry(item, "full")).toContain("Promise<{ answer: number; }>")
+  item.parameters = {
+    type: "object",
+    properties: {
+      path: { type: "string", minLength: 1, maxLength: 100, pattern: "^[a-z]+$" },
+      limit: { type: "integer", minimum: 1, maximum: 20, default: 5 },
+    },
+    required: ["path"],
+  }
+  const full = renderEntry(item, "full")
+  expect(full).toContain("// @integer @minimum 1 @maximum 20 @default 5")
+  expect(full).toContain("// @minLength 1 @maxLength 100 @pattern ^[a-z]+$")
+  expect(full).toContain("limit?: number;")
+  expect(renderEntry(item, "hint")).not.toContain("@minimum")
+  expect(renderEntry(item, "name")).not.toContain("@minimum")
 })
 test("Hint is deterministic, bounded and excludes schemas and guidelines; Name is just the heading", () => {
   const item = tool("search", "  First paragraph\n continues.\n\nSecond paragraph.")

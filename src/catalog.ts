@@ -1,10 +1,5 @@
 import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode"
-import {
-  MCP_TYPESCRIPT_PREAMBLE,
-  mcpStructuredContentSchema,
-  renderToolSample,
-  toCodemodeIdentifier,
-} from "@earendil-works/pi-codemode/declarations"
+import { renderToolSample, toCodemodeIdentifier } from "@earendil-works/pi-codemode/declarations"
 import type { ToolInfo, ToolDefinition } from "@earendil-works/pi-coding-agent"
 import type { CatalogConfig, ToolRule } from "./config"
 import { isNativeConfig } from "./config"
@@ -246,16 +241,5 @@ export function createCatalog(
   })
   const budget = config.budget === "inherit" ? options.inlineBudget : config.budget
   const shown = allocate(entries, budget)
-  const sharedTypes = "Shared MCP Types:\n```ts\n" + MCP_TYPESCRIPT_PREAMBLE + "\n```"
-  let prefix = native.prefix.replace("\n\n" + sharedTypes, "")
-  if (
-    entries.some(
-      (entry) =>
-        shown.get(entry.tool.name) === entry.texts.full &&
-        mcpStructuredContentSchema(entry.tool.outputSchema as CodemodeJsonSchema | undefined) !==
-          undefined,
-    )
-  )
-    prefix += "\n\n" + sharedTypes
-  return assemble(prefix, tools, shown)
+  return assemble(native.prefix, tools, shown)
 }

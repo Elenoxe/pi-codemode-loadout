@@ -658,7 +658,7 @@ test("synchronous schema reads restore the prototype and leave native tools unch
   })
 })
 
-test("new MCP Full entries carry exact CallToolResult schemas and shared types, and refresh after replacement", async () => {
+test("MCP Full entries render standalone result types and input constraints, and refresh after replacement", async () => {
   await withSession(
     {
       budget: 0,
@@ -678,7 +678,11 @@ test("new MCP Full entries carry exact CallToolResult schemas and shared types, 
         await session.prompt("connect")
       }
       const original = AgentSession.prototype.getAllTools
-      await connect(mcpServer)
+      const constrainedServer = mcpServer.replace(
+        'query:{type:"string"}',
+        'query:{type:"string",minLength:1,maxLength:100},limit:{type:"integer",minimum:1,maximum:20,default:5}',
+      )
+      await connect(constrainedServer)
       expect(
         getToolsWithSchemas(pi).find((tool) => tool.name === "mcp__docs__search")!.outputSchema,
       ).toBe(session.getToolDefinition("mcp__docs__search")!.outputSchema)
@@ -686,14 +690,23 @@ test("new MCP Full entries carry exact CallToolResult schemas and shared types, 
       const actual = getCurrentTools(requests.at(-1)!).find(
         (tool) => tool.name === "codemode",
       )!.description
-      expect(actual).toContain("Shared MCP Types:")
-      expect(actual).toContain("Promise<CallToolResult<")
+      expect(actual).not.toContain("Shared MCP Types:")
+      expect(actual).not.toContain("CallToolResult")
+      expect(actual).toContain("content:")
+      expect(actual).toContain("isError?: boolean")
+      expect(actual).toContain("structuredContent?: { answer?: string; }")
+      expect(actual).toContain("// @integer @minimum 1 @maximum 20 @default 5")
+      expect(actual).toContain("// @minLength 1 @maxLength 100")
       expect(actual).toContain("answer?: string")
       const discovery = session.messages.filter((message) => message.role === "toolResult").at(-1)!
       expect(JSON.stringify(discovery)).toContain("answer?: string")
+      expect(JSON.stringify(discovery)).toContain("schema capture")
+      expect(JSON.stringify(discovery)).toContain("structuredContent")
+      expect(JSON.stringify(discovery)).toContain("@integer @minimum 1 @maximum 20 @default 5")
+      expect(JSON.stringify(discovery)).not.toContain("CallToolResult")
 
       pi.unregisterMcpServer("docs")
-      await connect(mcpServer.replace('answer:{type:"string"}', 'revised:{type:"number"}'))
+      await connect(constrainedServer.replace('answer:{type:"string"}', 'revised:{type:"number"}'))
       const revised = getCurrentTools(requests.at(-1)!).find(
         (tool) => tool.name === "codemode",
       )!.description
