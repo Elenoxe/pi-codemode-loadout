@@ -34,7 +34,7 @@
     "format": "prettier --write --ignore-unknown .",
     "format:check": "prettier --check --ignore-unknown .",
     "check": "bun run typecheck && bun run lint && bun run format:check",
-    "prepare": "bun run husky",
+    "prepare": "node .husky/install.mjs",
     "prepublishOnly": "bun run test && bun run check"
   },
   "devDependencies": {
