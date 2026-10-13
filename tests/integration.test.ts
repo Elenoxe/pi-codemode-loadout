@@ -313,7 +313,7 @@ test("dynamic activation, removal, reactivation and reload use current native st
       await session.prompt("changed")
       expect(
         getCurrentTools(requests.at(-1)!).find((t) => t.name === "codemode")!.description,
-      ).not.toContain("### `read`")
+      ).not.toContain("`read`")
       session.setActiveToolsByName(["bash"])
       await session.prompt("removed")
       expect(getCurrentTools(requests.at(-1)!).some((t) => t.name === "codemode")).toBe(false)
@@ -321,7 +321,7 @@ test("dynamic activation, removal, reactivation and reload use current native st
       await session.prompt("readded")
       expect(
         getCurrentTools(requests.at(-1)!).find((t) => t.name === "codemode")!.description,
-      ).toContain("### `read`")
+      ).toContain("\n`read`")
       writeFileSync(join(root, "codemode-tool-catalog.json"), JSON.stringify({ enabled: false }))
       await session.prompt("not yet reloaded")
       expect(
@@ -375,7 +375,7 @@ test("late-connected real stdio MCP stays Deferred but can be explicitly listed 
         exposure: "codemode",
       })
       script(
-        'text(await tools.mcp__docs__search({query:"actual MCP call"})); text(await describeNamespace("mcp__docs"));',
+        'text(await tools.mcp__docs__search({query:"actual MCP call"})); text(await describeTool("mcp__docs__search")); text(await describeNamespace("mcp__docs"));',
       )
       await session.prompt("connect and execute")
       expect(JSON.stringify(session.messages)).toContain("actual MCP call")
@@ -383,7 +383,10 @@ test("late-connected real stdio MCP stays Deferred but can be explicitly listed 
       const description = getCurrentTools(requests.at(-1)!).find(
         (t) => t.name === "codemode",
       )!.description
-      expect(description).toContain("### `mcp__docs__search`")
+      expect(description).toEndWith(
+        "Other available tools (inspect with `describeTool(name)`):\n`mcp__docs__search`",
+      )
+      expect(description).not.toContain("### `mcp__docs__search`")
       expect(description).not.toContain("mcp__docs__search(args:")
       expect(session.getAllTools().find((t) => t.name === "mcp__docs__search")!.exposure).toBe(
         "deferred",
@@ -393,7 +396,7 @@ test("late-connected real stdio MCP stays Deferred but can be explicitly listed 
       await session.prompt("after withdrawal")
       expect(
         getCurrentTools(requests.at(-1)!).find((t) => t.name === "codemode")!.description,
-      ).not.toContain("### `mcp__docs__search`")
+      ).not.toContain("`mcp__docs__search`")
     },
   )
 }, 20000)
@@ -406,7 +409,7 @@ test("trusted project config overrides user fields on reload without merging rul
       await session.prompt("user config")
       expect(
         getCurrentTools(requests.at(-1)!).find((t) => t.name === "codemode")!.description,
-      ).not.toContain("### `read`")
+      ).not.toContain("`read`")
       mkdirSync(join(root, "workspace", ".pi"), { recursive: true })
       writeFileSync(
         join(root, "workspace", ".pi", "codemode-tool-catalog.json"),
@@ -417,8 +420,8 @@ test("trusted project config overrides user fields on reload without merging rul
       const description = getCurrentTools(requests.at(-1)!).find(
         (t) => t.name === "codemode",
       )!.description
-      expect(description).toContain("### `read`")
-      expect(description).not.toContain("### `bash`")
+      expect(description).toContain("\n`read`,")
+      expect(description).not.toContain("`bash`")
       expect(description).not.toContain("declare const tools")
     },
   )
@@ -545,7 +548,7 @@ test("untrusted project configuration is not opened, including on reload", async
       const description = getCurrentTools(requests.at(-1)!).find(
         (t) => t.name === "codemode",
       )!.description
-      expect(description).toContain("### `read`")
+      expect(description).toContain("\n`read`,")
       expect(description).not.toContain("declare const tools")
     },
     false,
@@ -665,7 +668,12 @@ test("synchronous schema reads restore the prototype and leave native tools unch
         "outputSchema",
       ),
     ).toBe(false)
-    expect(Object.hasOwn(raw.find((tool) => tool.name === "bash")!, "promptSnippet")).toBe(false)
+    expect(
+      Object.hasOwn(
+        raw.find((tool) => tool.name === "bash")!,
+        "promptSnippet",
+      ),
+    ).toBe(false)
     expect(() =>
       getToolsWithSchemas({
         ...pi,
@@ -809,7 +817,7 @@ test("native Codemode enable/disable changes take effect on reload", async () =>
       await session.prompt("enabled")
       expect(
         getCurrentTools(requests.at(-1)!).find((tool) => tool.name === "codemode")!.description,
-      ).toContain("### `read`")
+      ).toContain("\n`read`")
     },
   )
 })
@@ -836,7 +844,7 @@ test("inactive Codemode does not read schemas or change native requests", async 
       await session.prompt("explicitly activated")
       expect(
         getCurrentTools(requests.at(-1)!).find((tool) => tool.name === "codemode")!.description,
-      ).toContain("### `read`")
+      ).toContain("\n`read`")
     },
     true,
     [],

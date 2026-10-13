@@ -97,7 +97,7 @@ export function candidateTools(options: CatalogOptions, config: CatalogConfig): 
 function assemble(
   prefix: string,
   tools: readonly ToolInfo[],
-  sections: ReadonlyMap<string, string>,
+  sections: ReadonlyMap<string, AllocatedTool>,
 ): string {
   if (tools.length === 0) return prefix
   const groups = new Map<string, ToolInfo[]>()
@@ -107,11 +107,19 @@ function assemble(
     group.push(tool)
     groups.set(key, group)
   }
-  const output = ["Nested tools:"]
+  const output: string[] = []
+  const names: string[] = []
   for (const [name, group] of [...groups].sort(([a], [b]) =>
     a === "" ? -1 : b === "" ? 1 : a.localeCompare(b),
   )) {
     const visible = group.filter((tool) => sections.has(tool.name))
+    const declarations = visible.filter((tool) => sections.get(tool.name)!.level !== "name")
+    names.push(
+      ...visible
+        .filter((tool) => sections.get(tool.name)!.level === "name")
+        .map((tool) => tool.name),
+    )
+    if (visible.length > 0 && declarations.length === 0) continue
     if (name) {
       const listing =
         visible.length === group.length
@@ -122,9 +130,15 @@ function assemble(
       const description = group[0]?.namespace?.description?.trim()
       output.push(`## ${name}${listing}${description ? "\n" + description : ""}`)
     }
-    for (const tool of visible) output.push(sections.get(tool.name)!)
+    for (const tool of declarations) output.push(sections.get(tool.name)!.text)
   }
-  return prefix + "\n\n" + output.join("\n\n")
+  if (output.length > 0) output.unshift("Nested tools:")
+  if (names.length > 0)
+    output.push(
+      "Other available tools (inspect with `describeTool(name)`):\n" +
+        names.map((name) => `\`${name}\``).join(", "),
+    )
+  return output.length > 0 ? prefix + "\n\n" + output.join("\n\n") : prefix
 }
 function fullDescription(tool: ToolInfo): string {
   const bullets = (tool.promptGuidelines ?? []).flatMap((value) =>
@@ -133,6 +147,10 @@ function fullDescription(tool: ToolInfo): string {
   return bullets.length ? tool.description.trim() + "\n\n" + bullets.join("\n") : tool.description
 }
 type DisplayLevel = "full" | "hint" | "name"
+interface AllocatedTool {
+  level: DisplayLevel
+  text: string
+}
 export function renderEntry(
   tool: CatalogToolInfo,
   level: DisplayLevel,
@@ -168,12 +186,18 @@ interface Entry {
 export function sectionCost(text: string): number {
   return Math.ceil(text.length / 4)
 }
-function allocate(entries: Entry[], budget: number): Map<string, string> {
-  const shown = new Map<string, string>()
+function allocate(entries: Entry[], budget: number): Map<string, AllocatedTool> {
+  const shown = new Map<string, AllocatedTool>()
+  const show = (entry: Entry, level: DisplayLevel) => {
+    shown.set(entry.tool.name, {
+      level: level === "hint" && entry.texts.hint === entry.texts.name ? "name" : level,
+      text: entry.texts[level],
+    })
+  }
   let remaining = budget
   for (const entry of entries) {
     if (!entry.minimum) continue
-    shown.set(entry.tool.name, entry.texts[entry.minimum])
+    show(entry, entry.minimum)
     remaining -= sectionCost(entry.texts[entry.minimum])
   }
   if (remaining < 0) return shown
@@ -210,7 +234,7 @@ function allocate(entries: Entry[], budget: number): Map<string, string> {
           (level) => sectionCost(entry.texts[level]) - reserved <= remaining,
         )
         if (level) {
-          shown.set(entry.tool.name, entry.texts[level])
+          show(entry, level)
           remaining -= sectionCost(entry.texts[level]) - reserved
         }
       }
@@ -219,9 +243,9 @@ function allocate(entries: Entry[], budget: number): Map<string, string> {
   for (const entry of upgrades) {
     const current = shown.get(entry.tool.name)
     if (current === undefined) continue
-    const extra = sectionCost(entry.texts.full) - sectionCost(current)
+    const extra = sectionCost(entry.texts.full) - sectionCost(current.text)
     if (extra <= remaining) {
-      shown.set(entry.tool.name, entry.texts.full)
+      show(entry, "full")
       remaining -= extra
     }
   }

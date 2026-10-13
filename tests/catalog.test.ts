@@ -29,6 +29,17 @@ const options = (tools: ToolInfo[], inlineBudget = 10000) => ({
   active: new Set(tools.map((t) => t.name)),
   mode: "only" as const,
 })
+// Keep allocation assertions charged at the original Name heading cost.
+function readCatalog(description: string, tools: ToolInfo[]) {
+  const [declarations, names] = description.split(
+    "\n\nOther available tools (inspect with `describeTool(name)`):\n",
+  )
+  const parsed = readNativeCatalog(declarations!, tools)
+  if (names)
+    for (const name of names.split(", ").map((value) => value.slice(1, -1)))
+      parsed.sections.set(name, toolHeading(name))
+  return parsed
+}
 
 test("Full preserves native declarations and renders output types and input constraints", () => {
   const item = tool("search")
@@ -92,9 +103,10 @@ test("configured hints override author snippets; tools without snippets degrade 
     },
     options(tools),
   )
-  const sections = readNativeCatalog(result, tools).sections
+  const sections = readCatalog(result, tools).sections
   expect(sections.get("named")).toBe("### `named`\nCustom summary")
-  expect(sections.get("missing")).toBe(toolHeading("missing"))
+  expect(result).not.toContain(toolHeading("missing"))
+  expect(result).toEndWith("Other available tools (inspect with `describeTool(name)`):\n`missing`")
   expect(result).not.toContain("Authored summary")
   expect(result).not.toContain("Description must not be summarized.")
 
@@ -104,9 +116,7 @@ test("configured hints override author snippets; tools without snippets degrade 
     { ...DEFAULT_CONFIG, budget, rules: [{ match: ["missing"], level: "auto" }] },
     options([missing]),
   )
-  expect(readNativeCatalog(automatic, [missing]).sections.get("missing")).toBe(
-    toolHeading("missing"),
-  )
+  expect(readCatalog(automatic, [missing]).sections.get("missing")).toBe(toolHeading("missing"))
 })
 test("catalog retains native instructions, applies fixed levels and excludes Omit", () => {
   const tools = [tool("full"), tool("hint"), tool("name"), tool("omit")]
@@ -122,9 +132,10 @@ test("catalog retains native instructions, applies fixed levels and excludes Omi
     options(tools),
   )
   expect(result).toStartWith("Native execution instructions\n\nGlobals:\n- describeTool()")
-  expect(readNativeCatalog(result, tools).sections.get("full")).toContain("declare const tools")
-  expect(readNativeCatalog(result, tools).sections.get("hint")).not.toContain("declare const tools")
-  expect(readNativeCatalog(result, tools).sections.get("name")).toBe(toolHeading("name"))
+  expect(readCatalog(result, tools).sections.get("full")).toContain("declare const tools")
+  expect(readCatalog(result, tools).sections.get("hint")).not.toContain("declare const tools")
+  expect(result).not.toContain(toolHeading("name"))
+  expect(result).toEndWith("Other available tools (inspect with `describeTool(name)`):\n`name`")
   expect(result).not.toContain(toolHeading("omit"))
 })
 test("catalog parser does not split headings inside fenced descriptions", () => {
@@ -148,9 +159,7 @@ test("Auto covers tools with Hint before Full; omitted and fixed Full never beco
     rules: [{ match: ["search"], level: "auto" as const }],
   }
   expect(
-    readNativeCatalog(createCatalog(description, config, options([item])), [item]).sections.get(
-      "search",
-    ),
+    readCatalog(createCatalog(description, config, options([item])), [item]).sections.get("search"),
   ).toBe(renderEntry(item, "hint"))
   for (const level of [undefined, "full" as const]) {
     expect(
@@ -166,10 +175,9 @@ test("Auto covers tools with Hint before Full; omitted and fixed Full never beco
   }
   const nameCost = Math.ceil(renderEntry(item, "name").length / 4)
   expect(
-    readNativeCatalog(
-      createCatalog(description, { ...config, budget: nameCost }, options([item])),
-      [item],
-    ).sections.get("search"),
+    readCatalog(createCatalog(description, { ...config, budget: nameCost }, options([item])), [
+      item,
+    ]).sections.get("search"),
   ).toBe(renderEntry(item, "name"))
   expect(
     readNativeCatalog(
@@ -194,12 +202,12 @@ test("Auto covers tools with Hint before Full; omitted and fixed Full never beco
         forceExpose: guarantee === "force",
       })),
     }
-    const hints = readNativeCatalog(
+    const hints = readCatalog(
       createCatalog(native(tools), layeredConfig, options(tools)),
       tools,
     ).sections
     for (const item of tools) expect(hints.get(item.name)).toBe(renderEntry(item, "hint"))
-    const upgraded = readNativeCatalog(
+    const upgraded = readCatalog(
       createCatalog(
         native(tools),
         { ...layeredConfig, budget: layeredConfig.budget + 1 },
@@ -244,7 +252,7 @@ test("shared budget charges actual entry text and is deterministic across bounda
   for (let budget = 0; budget < 300; budget += 7) {
     const config = { ...DEFAULT_CONFIG, budget, rules: [{ match: ["c"], level: "auto" as const }] }
     const result = createCatalog(native(tools), config, options(tools))
-    const sections = readNativeCatalog(result, tools).sections
+    const sections = readCatalog(result, tools).sections
     expect(
       [...sections.values()].reduce((sum, text) => sum + Math.ceil(text.length / 4), 0),
     ).toBeLessThanOrEqual(budget)
@@ -280,10 +288,7 @@ test("fixed forced formats exceed budget, Auto and unspecified forced levels res
           : (t.name as "full" | "hint" | "name" | "auto" | "omit"),
     })),
   }
-  const result = readNativeCatalog(
-    createCatalog(native(tools), config, options(tools)),
-    tools,
-  ).sections
+  const result = readCatalog(createCatalog(native(tools), config, options(tools)), tools).sections
   expect(result.get("full")).toBe(renderEntry(tools[0]!, "full"))
   expect(result.get("hint")).toBe(renderEntry(tools[1]!, "hint"))
   for (const name of ["name", "auto", "unspecified"])
@@ -332,7 +337,7 @@ test("global guarantee covers only eligible active tools and overrides fixed lev
       { match: ["omit"], level: "omit" as const },
     ],
   }
-  const sections = readNativeCatalog(createCatalog(native(tools), config, opts), tools).sections
+  const sections = readCatalog(createCatalog(native(tools), config, opts), tools).sections
   expect([...sections.keys()]).toEqual(["full", "hint"])
   expect(sections.get("full")).toBe(toolHeading("full"))
   expect(sections.get("hint")).toBe(toolHeading("hint"))
@@ -342,7 +347,7 @@ test("forced minima reserve budget before high-priority optional tools", () => {
     optional = tool("optional"),
     tools = [optional, forced]
   const budget = Math.ceil(renderEntry(optional, "full").length / 4)
-  const sections = readNativeCatalog(
+  const sections = readCatalog(
     createCatalog(
       native(tools),
       {
@@ -416,8 +421,8 @@ test("Deferred MCP requires explicit presentation selectors; generic source and 
       { ...DEFAULT_CONFIG, budget: 0, rules: [{ match, level: "auto", forceExpose: true }] },
       options(tools),
     )
-    expect([...readNativeCatalog(result, tools).sections.keys()]).toEqual([mcp.name])
-    expect(result).toContain("## mcp__docs\nDocumentation")
+    expect([...readCatalog(result, tools).sections.keys()]).toEqual([mcp.name])
+    expect(result).not.toContain("## mcp__docs")
   }
   mcp.exposure = "hidden"
   expect(
@@ -458,7 +463,7 @@ test("unspecified forced level never selects Hint and source selectors can expli
     rules: [{ match: [item.name], forceExpose: true }],
   }
   expect(
-    readNativeCatalog(createCatalog(native([item]), config, options([item])), [item]).sections.get(
+    readCatalog(createCatalog(native([item]), config, options([item])), [item]).sections.get(
       item.name,
     ),
   ).toBe(toolHeading(item.name))
@@ -507,4 +512,77 @@ test("same-priority namespaces round-robin before a namespace is completed", () 
         renderEntry(item, item.name === (boostPriority ? "c" : "b") ? "hint" : "full"),
       )
   }
+})
+
+test("Name-only catalogs omit empty nested tools and namespaces, including missing forced Hints", () => {
+  const tools = [tool("ask_user_question"), tool("mcp__docs__search")]
+  tools[0]!.promptSnippet = "   "
+  delete tools[1]!.promptSnippet
+  tools[1]!.namespace = { name: "mcp__docs", description: "Documentation" }
+  for (const forceExpose of [false, true]) {
+    const result = createCatalog(
+      native(tools),
+      {
+        ...DEFAULT_CONFIG,
+        budget: forceExpose ? 0 : 1000,
+        rules: tools.map((item) => ({ match: [item.name], level: "hint", forceExpose })),
+      },
+      options(tools),
+    )
+    expect(result).toBe(
+      "Native execution instructions\n\nGlobals:\n- describeTool()\n\n" +
+        "Other available tools (inspect with `describeTool(name)`):\n" +
+        "`ask_user_question`, `mcp__docs__search`",
+    )
+  }
+})
+
+test("namespace listing counts include Names and compact names retain registration spelling", () => {
+  const full = tool("full"),
+    named = tool("raw-name"),
+    hint = tool("hint"),
+    absent = tool("absent")
+  full.namespace = named.namespace = { name: "complete" }
+  hint.namespace = absent.namespace = { name: "partial" }
+  const tools = [named, full, hint, absent]
+  const budget =
+    sectionCost(renderEntry(full, "full")) +
+    sectionCost(renderEntry(hint, "hint")) +
+    sectionCost(renderEntry(named, "name"))
+  const result = createCatalog(
+    native(tools),
+    {
+      ...DEFAULT_CONFIG,
+      budget,
+      rules: [
+        { match: [named.name], level: "name", forceExpose: true },
+        { match: [hint.name], level: "hint", forceExpose: true },
+        { match: [full.name], level: "full", forceExpose: true },
+      ],
+    },
+    options(tools),
+  )
+  expect(result).toContain("## complete\n")
+  expect(result).not.toContain("## complete (some tools not listed)")
+  expect(result).toContain("## partial (some tools not listed)")
+  expect(result).not.toContain(toolHeading(named.name))
+  expect(result).toEndWith("Other available tools (inspect with `describeTool(name)`):\n`raw-name`")
+})
+
+test("catalogs without Names omit the compact list, including Auto upgrades to Full", () => {
+  const tools = [tool("full"), tool("hint"), tool("auto")]
+  const result = createCatalog(
+    native(tools),
+    {
+      ...DEFAULT_CONFIG,
+      rules: [
+        { match: ["hint"], level: "hint" },
+        { match: ["auto"], level: "auto" },
+      ],
+    },
+    options(tools),
+  )
+  expect(result).not.toContain("Other available tools")
+  expect(readNativeCatalog(result, tools).sections.get("auto")).toBe(renderEntry(tools[2]!, "full"))
+  expect(readNativeCatalog(result, tools).sections.get("hint")).toBe(renderEntry(tools[1]!, "hint"))
 })
