@@ -176,6 +176,7 @@ function allocate(entries: Entry[], budget: number): Map<string, string> {
     remaining -= sectionCost(entry.texts[entry.minimum])
   }
   if (remaining < 0) return shown
+  const upgrades: Entry[] = []
   const priorities = [...new Set(entries.map((entry) => entry.rule?.priority ?? 0))].sort(
     (a, b) => b - a,
   )
@@ -196,8 +197,9 @@ function allocate(entries: Entry[], budget: number): Map<string, string> {
       for (const queue of queues) {
         const entry = queue.shift()
         if (!entry) continue
+        if (entry.rule?.level === "auto") upgrades.push(entry)
         const levels: DisplayLevel[] =
-          entry.rule?.level === "auto" ? ["full", "hint", "name"] : [entry.preferred]
+          entry.rule?.level === "auto" ? ["hint", "name"] : [entry.preferred]
         const reserved = entry.minimum ? sectionCost(entry.texts[entry.minimum]) : 0
         const level = levels.find(
           (level) => sectionCost(entry.texts[level]) - reserved <= remaining,
@@ -207,6 +209,15 @@ function allocate(entries: Entry[], budget: number): Map<string, string> {
           remaining -= sectionCost(entry.texts[level]) - reserved
         }
       }
+    }
+  }
+  for (const entry of upgrades) {
+    const current = shown.get(entry.tool.name)
+    if (current === undefined) continue
+    const extra = sectionCost(entry.texts.full) - sectionCost(current)
+    if (extra <= remaining) {
+      shown.set(entry.tool.name, entry.texts.full)
+      remaining -= extra
     }
   }
   return shown

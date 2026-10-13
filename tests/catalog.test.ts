@@ -1,7 +1,13 @@
 import { expect, test } from "bun:test"
 import type { CatalogToolInfo as ToolInfo } from "../src/catalog"
 import { DEFAULT_CONFIG } from "../src/config"
-import { createCatalog, readNativeCatalog, renderEntry, toolHeading } from "../src/catalog"
+import {
+  createCatalog,
+  readNativeCatalog,
+  renderEntry,
+  sectionCost,
+  toolHeading,
+} from "../src/catalog"
 
 function tool(name: string, description = "Search file contents."): ToolInfo {
   return {
@@ -88,7 +94,7 @@ test("catalog parser does not split headings inside fenced descriptions", () => 
   expect(result.sections.get("b")).toBe(toolHeading("b") + "\nother")
 })
 
-test("Auto downgrades; omitted level and fixed Full never silently become Hint", () => {
+test("Auto covers tools with Hint before Full; omitted and fixed Full never become Hint", () => {
   const item = tool("search", "Description " + "x".repeat(300))
   const description = native([item])
   const hintCost = Math.ceil(renderEntry(item, "hint").length / 4)
@@ -127,6 +133,39 @@ test("Auto downgrades; omitted level and fixed Full never silently become Hint",
       [item],
     ).sections.size,
   ).toBe(0)
+
+  const tools = [tool("a"), tool("b"), tool("c")]
+  const hintBudget = tools.reduce((sum, item) => sum + sectionCost(renderEntry(item, "hint")), 0)
+  const upgradeCost =
+    sectionCost(renderEntry(tools[0]!, "full")) - sectionCost(renderEntry(tools[0]!, "hint"))
+  for (const guarantee of ["none", "force", "global"]) {
+    const layeredConfig = {
+      ...DEFAULT_CONFIG,
+      budget: hintBudget + upgradeCost - 1,
+      exposeAllActiveTools: guarantee === "global",
+      rules: tools.map((item) => ({
+        match: [item.name],
+        level: "auto" as const,
+        priority: item.name === "a" ? 10 : 0,
+        forceExpose: guarantee === "force",
+      })),
+    }
+    const hints = readNativeCatalog(
+      createCatalog(native(tools), layeredConfig, options(tools)),
+      tools,
+    ).sections
+    for (const item of tools) expect(hints.get(item.name)).toBe(renderEntry(item, "hint"))
+    const upgraded = readNativeCatalog(
+      createCatalog(
+        native(tools),
+        { ...layeredConfig, budget: layeredConfig.budget + 1 },
+        options(tools),
+      ),
+      tools,
+    ).sections
+    for (const [index, item] of tools.entries())
+      expect(upgraded.get(item.name)).toBe(renderEntry(item, index === 0 ? "full" : "hint"))
+  }
 })
 test("priority precedes native namespace round-robin and cheapest-first within a group", () => {
   const big = tool("big", "x".repeat(500)),
@@ -399,4 +438,29 @@ test("same-priority namespaces round-robin before a namespace is completed", () 
     Math.ceil(renderEntry(a, "full").length / 4) + Math.ceil(renderEntry(c, "full").length / 4)
   const result = createCatalog(native(tools), { ...DEFAULT_CONFIG, budget }, options(tools))
   expect([...readNativeCatalog(result, tools).sections.keys()]).toEqual(["a", "c"])
+
+  const hintBudget = tools.reduce((sum, item) => sum + sectionCost(renderEntry(item, "hint")), 0)
+  const upgradeCost = sectionCost(renderEntry(a, "full")) - sectionCost(renderEntry(a, "hint"))
+  for (const boostPriority of [false, true]) {
+    const sections = readNativeCatalog(
+      createCatalog(
+        native(tools),
+        {
+          ...DEFAULT_CONFIG,
+          budget: hintBudget + 2 * upgradeCost,
+          rules: tools.map((item) => ({
+            match: [item.name],
+            level: "auto" as const,
+            priority: boostPriority && item.name === "b" ? 10 : 0,
+          })),
+        },
+        options(tools),
+      ),
+      tools,
+    ).sections
+    for (const item of tools)
+      expect(sections.get(item.name)).toBe(
+        renderEntry(item, item.name === (boostPriority ? "c" : "b") ? "hint" : "full"),
+      )
+  }
 })
