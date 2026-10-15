@@ -1,7 +1,7 @@
 {
   "name": "@eleno/pi-codemode-tool-catalog",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Configurable tool catalog exposure and prioritization for Pi Codemode.",
   "files": [
     "src"
