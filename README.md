@@ -143,7 +143,7 @@ Each rule selects tools and sets how they appear in the catalog.
 
 | Field      | Type                                         | Default  | Description                                                          |
 | ---------- | -------------------------------------------- | -------- | -------------------------------------------------------------------- |
-| `match`    | `string \| Selector[]`                       | Required | Tool names or selectors to match.                                    |
+| `match`    | `(string \| Selector)[]`                     | Required | Tool names or selectors to match.                                    |
 | `priority` | `number`                                     | `0`      | Allocation priority. Higher values are processed first.              |
 | `minLevel` | `"name"` \| `"hint"` \| `"full"`             | Unset    | Minimum guaranteed level.                                            |
 | `maxLevel` | `"name"` \| `"hint"` \| `"full"` \| `"omit"` | `"full"` | Maximum permitted level. `"omit"` removes the tool from the catalog. |
