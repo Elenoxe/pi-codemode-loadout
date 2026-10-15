@@ -21,7 +21,7 @@ test("exact selectors use AND, lists use OR and null is distinct from omitted na
   expect(matches({ ...tool, namespace: undefined }, { namespace: null })).toBe(true)
   expect(resolveRule(tool, [{ match: ["bash", "read"], maxLevel: "name" }])?.maxLevel).toBe("name")
 })
-test("Name > Namespace > Source, matching selector specificity and earliest tie", () => {
+test("first matching rule wins regardless of selector specificity", () => {
   const rules = [
     { match: [{ source: "builtin" }], maxLevel: "hint" as const },
     { match: [{ namespace: "files", source: "builtin" }], maxLevel: "name" as const },
@@ -29,14 +29,17 @@ test("Name > Namespace > Source, matching selector specificity and earliest tie"
     { match: [{ name: "read", namespace: "files" }], maxLevel: "omit" as const },
     { match: [{ name: "read", namespace: "files" }], maxLevel: "full" as const },
   ]
-  expect(resolveRule(tool, rules)?.maxLevel).toBe("omit")
-  expect(resolveRule(tool, rules.slice(0, 3))?.maxLevel).toBe("full")
+  expect(resolveRule(tool, rules)).toBe(rules[0])
+  expect(resolveRule(tool, rules.slice(1))).toBe(rules[1])
+  expect(resolveRule(tool, rules.slice(3))).toBe(rules[3])
+  expect(resolveRule(tool, [{ match: ["missing"] }, ...rules])).toBe(rules[0])
+  expect(resolveRule(tool, [{ match: ["missing"] }])).toBeUndefined()
   expect(
     resolveRule(tool, [
       { match: [{ name: "missing", namespace: "files" }, { source: "builtin" }], maxLevel: "omit" },
       rules[1]!,
     ])?.maxLevel,
-  ).toBe("name")
+  ).toBe("omit")
 })
 test("invalid fields, wildcards, selectors and nonfinite values fail explicitly", () => {
   for (const value of [
