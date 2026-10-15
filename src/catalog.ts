@@ -232,36 +232,23 @@ function allocate(entries: Entry[], budget: number): Map<string, AllocatedTool> 
     const namespaces = [...groups]
       .sort(([a], [b]) => (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)))
       .map(([, group]) => group)
-    const coverage = (entry: Entry): DisplayLevel =>
-      entry.maximum !== "name" && entry.texts.hint !== entry.texts.name ? "hint" : "name"
-    for (const phase of ["coverage", "upgrade"] as const) {
-      const ceilingFor = (entry: Entry) =>
-        phase === "coverage" ? coverage(entry) : displayLevel(entry, entry.maximum)
+    for (const target of LEVELS) {
       const queues = namespaces.map((group) =>
         group.filter((entry) => {
           const current = shown.get(entry.tool.name)?.level
-          return current === undefined
-            ? phase === "coverage"
-            : LEVELS.indexOf(current) < LEVELS.indexOf(ceilingFor(entry))
+          return (
+            (current === undefined || LEVELS.indexOf(current) < LEVELS.indexOf(target)) &&
+            LEVELS.indexOf(target) <= LEVELS.indexOf(entry.maximum) &&
+            (target !== "hint" || entry.texts.hint !== entry.texts.name)
+          )
         }),
       )
       while (queues.some((queue) => queue.length > 0)) {
         for (const queue of queues) {
-          queue.sort((a, b) => changeCost(a, ceilingFor(a)) - changeCost(b, ceilingFor(b)))
+          queue.sort((a, b) => changeCost(a, target) - changeCost(b, target))
           const entry = queue.shift()
           if (!entry) continue
-          const current = shown.get(entry.tool.name)?.level
-          const ceiling = ceilingFor(entry)
-          const levels = [...LEVELS]
-            .reverse()
-            .filter(
-              (level) =>
-                LEVELS.indexOf(level) <= LEVELS.indexOf(ceiling) &&
-                (current === undefined || LEVELS.indexOf(level) > LEVELS.indexOf(current)) &&
-                (level !== "hint" || entry.texts.hint !== entry.texts.name),
-            )
-          const level = levels.find((level) => changeCost(entry, level) <= remaining)
-          if (level) show(entry, level)
+          if (changeCost(entry, target) <= remaining) show(entry, target)
         }
       }
     }

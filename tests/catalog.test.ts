@@ -816,7 +816,7 @@ test("namespace listing counts include Names and compact names retain registrati
       budget,
       rules: [
         { match: [named.name], minLevel: "name", maxLevel: "name" },
-        { match: [hint.name], minLevel: "name", maxLevel: "hint" },
+        { match: [hint.name], minLevel: "hint", maxLevel: "hint" },
         { match: [full.name], minLevel: "full" },
       ],
     },
@@ -842,4 +842,86 @@ test("catalogs without Names omit the compact list, including Auto upgrades to F
   expect(result).not.toContain("Other available tools")
   expect(readNativeCatalog(result, tools).sections.get("auto")).toBe(renderEntry(tools[2]!, "full"))
   expect(readNativeCatalog(result, tools).sections.get("hint")).toBe(renderEntry(tools[1]!, "hint"))
+})
+
+test("same-priority Name coverage precedes Hint, and all Hints precede Full", () => {
+  const tools = [tool("a"), tool("b"), tool("c")]
+  for (const item of tools) item.promptSnippet = "x".repeat(100)
+  const namesBudget = sectionCost(nameList(tools.map((item) => item.name)))
+  const names = readCatalog(
+    createCatalog(native(tools), { ...DEFAULT_CONFIG, budget: namesBudget }, options(tools)),
+    tools,
+  ).sections
+  for (const item of tools) expect(names.get(item.name)).toBe(toolHeading(item.name))
+
+  const hintBudget = tools.reduce((sum, item) => sum + sectionCost(renderEntry(item, "hint")), 0)
+  const hints = readCatalog(
+    createCatalog(
+      native(tools),
+      {
+        ...DEFAULT_CONFIG,
+        budget: hintBudget,
+        rules: [{ match: [{ source: "test" }], minLevel: "name" }],
+      },
+      options(tools),
+    ),
+    tools,
+  ).sections
+  for (const item of tools) expect(hints.get(item.name)).toBe(renderEntry(item, "hint"))
+})
+
+for (const target of ["name", "hint", "full"] as const) {
+  test(`${target} independently sorts incremental costs and round-robins namespaces`, () => {
+    const a = tool("a", "x".repeat(500))
+    const b = tool("bbbb", "x".repeat(600))
+    const c = tool("cccccccc", "x".repeat(800))
+    a.promptSnippet = "x".repeat(100)
+    b.promptSnippet = "x".repeat(104)
+    c.promptSnippet = "x".repeat(140)
+    c.namespace = { name: "server" }
+    const tools = [b, c, a]
+    const minimum = target === "name" ? undefined : target === "hint" ? "name" : "hint"
+    const budget =
+      target === "name"
+        ? sectionCost(nameList([a.name, c.name]))
+        : sectionCost(renderEntry(a, target)) +
+          sectionCost(renderEntry(c, target)) +
+          (minimum === "name"
+            ? sectionCost(nameList([b.name]))
+            : sectionCost(renderEntry(b, "hint")))
+    const sections = readCatalog(
+      createCatalog(
+        native(tools),
+        {
+          ...DEFAULT_CONFIG,
+          budget,
+          rules: [{ match: [{ source: "test" }], minLevel: minimum, maxLevel: target }],
+        },
+        options(tools),
+      ),
+      tools,
+    ).sections
+    expect(sections.get(a.name)).toBe(renderEntry(a, target))
+    expect(sections.get(c.name)).toBe(renderEntry(c, target))
+    expect(sections.get(b.name)).toBe(minimum ? renderEntry(b, minimum) : undefined)
+  })
+}
+
+test("failed Name allocation still permits direct Hint or Full allocation", () => {
+  for (const target of ["hint", "full"] as const) {
+    const item = tool("a")
+    if (target === "full") delete item.promptSnippet
+    const full = toolHeading(item.name) + "\nTiny native declaration"
+    const description = "intro\n\nNested tools:\n\n" + full
+    const expected = target === "full" ? full : renderEntry(item, "hint")
+    const budget = sectionCost(expected)
+    expect(budget).toBeLessThan(sectionCost(nameList([item.name])))
+    const result = createCatalog(
+      description,
+      { ...DEFAULT_CONFIG, budget, rules: [{ match: [item.name], maxLevel: target }] },
+      options([item]),
+    )
+    expect(readCatalog(result, [item]).sections.get(item.name)).toBe(expected)
+    expect(result).not.toContain(NAME_LIST_HEADER)
+  }
 })
