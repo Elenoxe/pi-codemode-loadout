@@ -765,7 +765,7 @@ test("explicit defaults and disabled configuration preserve native descriptions"
 
 import { Type } from "typebox"
 
-test("budget-only overrides match native Pi even when structured schemas were originally omitted", async () => {
+test("budget-only overrides match native Pi even when tools and output schemas were originally omitted", async () => {
   await withSession({ budget: 200 }, "only", async (session, requests, control) => {
     const { pi, root } = control
     session.settingsManager.applyOverrides({ codemode: { inlineBudget: 100 } })
@@ -809,18 +809,22 @@ test("budget-only overrides match native Pi even when structured schemas were or
         "\n\nOther available tools (inspect with `describeTool(name)`):\n`huge`",
     )
 
-    session.settingsManager.applyOverrides({ codemode: { inlineBudget: 100 } })
     writeFileSync(join(root, "codemode-tool-catalog.json"), JSON.stringify({ budget: 20000 }))
     const huge = session.getToolDefinition("huge")!
     const small = session.getToolDefinition("small")!
     await session.reload()
+    session.settingsManager.applyOverrides({ codemode: { inlineBudget: 0 } })
     control.pi.registerTool(huge)
     control.pi.registerTool(small)
+    expect(
+      session.agent.state.tools.find((tool) => tool.name === "codemode")!.description,
+    ).not.toContain("### `small`")
     await session.prompt("larger custom budget")
     const expanded = getCurrentTools(requests.at(-1)!).find(
       (tool) => tool.name === "codemode",
     )!.description
     expect(expanded).toContain("field499: string")
+    expect(expanded).toContain("small(args: { [key: string]: unknown; }): Promise<string>;")
     expect(expanded).not.toContain("Promise<unknown>")
     session.settingsManager.applyOverrides({ codemode: { inlineBudget: 20000 } })
     session.setActiveToolsByName(session.getActiveToolNames())

@@ -233,7 +233,7 @@ test("Full preserves native declarations and renders output types and input cons
   const item = tool("search")
   expect(renderEntry(item, "full", "original exact bytes")).toBe("original exact bytes")
   expect(renderEntry(item, "full")).toContain("Keep paths scoped.")
-  expect(renderEntry(item, "full")).toContain("Promise<unknown>")
+  expect(renderEntry(item, "full")).toContain("Promise<string>")
   expect(renderEntry(item, "full")).toContain("path: string")
   item.outputSchema = {
     type: "object",

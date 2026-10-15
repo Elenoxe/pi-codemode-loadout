@@ -179,7 +179,7 @@ export function renderEntry(
       name: tool.name,
       description,
       inputSchema: tool.parameters as CodemodeJsonSchema,
-      outputSchema: tool.outputSchema as CodemodeJsonSchema | undefined,
+      outputSchema: (tool.outputSchema as CodemodeJsonSchema | undefined) ?? { type: "string" },
     }).trim()
   )
 }
