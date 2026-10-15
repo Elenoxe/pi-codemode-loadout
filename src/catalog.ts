@@ -27,7 +27,7 @@ export function readNativeCatalog(description: string, tools: readonly ToolInfo[
   if (start < 0) return { prefix: description, sections: new Map<string, string>() }
   const prefix = description.slice(0, start)
   const headings = new Map(tools.map((tool) => [toolHeading(tool.name), tool]))
-  const namespaces = new Set(tools.flatMap((tool) => (tool.namespace ? [tool.namespace.name] : [])))
+  const namespaces = tools.flatMap((tool) => (tool.namespace ? [tool.namespace] : []))
   const sections = new Map<string, string>()
   let name: string | undefined
   let lines: string[] = []
@@ -48,11 +48,11 @@ export function readNativeCatalog(description: string, tools: readonly ToolInfo[
     const ns =
       !fence &&
       index > protectedUntil &&
-      [...namespaces].some(
+      namespaces.find(
         (value) =>
-          line === `## ${value}` ||
-          line === `## ${value} (tools not listed)` ||
-          line === `## ${value} (some tools not listed)`,
+          line === `## ${value.name}` ||
+          line === `## ${value.name} (tools not listed)` ||
+          line === `## ${value.name} (some tools not listed)`,
       )
     if (next || ns) {
       finish()
@@ -65,6 +65,16 @@ export function readNativeCatalog(description: string, tools: readonly ToolInfo[
             .slice(index + 1)
             .join("\n")
             .startsWith(body + "\n\ncodemode tool declaration:")
+        )
+          protectedUntil = index + body.split("\n").length
+      } else if (ns) {
+        const body = ns.description?.trim()
+        if (
+          body &&
+          sourceLines
+            .slice(index + 1)
+            .join("\n")
+            .startsWith(body)
         )
           protectedUntil = index + body.split("\n").length
       }
