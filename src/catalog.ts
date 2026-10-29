@@ -105,10 +105,18 @@ export function candidateTools(options: CatalogOptions, config: CatalogConfig): 
   })
 }
 const NAME_LIST_HEADER = "Other available tools (inspect with `describeTool(name)`):\n"
+/** Name entries already carry NAME_LIST_HEADER, so this note only covers Hint entries. */
+const ABRIDGED_NOTICE = "Abridged entries: call `describeTool(name)` before use."
+const NOTICE_SUFFIX = "\n\n" + ABRIDGED_NOTICE
+/** The hook reruns on every request, so a replayed description may already carry the notice. */
+export function stripOwnNotice(prefix: string): string {
+  return prefix.endsWith(NOTICE_SUFFIX) ? prefix.slice(0, -NOTICE_SUFFIX.length) : prefix
+}
 function assemble(
   prefix: string,
   tools: readonly ToolInfo[],
   sections: ReadonlyMap<string, AllocatedTool>,
+  notice: boolean,
 ): string {
   if (tools.length === 0) return prefix
   const groups = new Map<string, ToolInfo[]>()
@@ -144,6 +152,7 @@ function assemble(
     for (const tool of declarations) output.push(sections.get(tool.name)!.text)
   }
   if (output.length > 0) output.unshift("Nested tools:")
+  if (notice) output.unshift(ABRIDGED_NOTICE)
   if (names.length > 0)
     output.push(NAME_LIST_HEADER + names.map((name) => `\`${name}\``).join(", "))
   return output.length > 0 ? prefix + "\n\n" + output.join("\n\n") : prefix
@@ -157,6 +166,12 @@ function fullDescription(tool: ToolInfo): string {
 interface AllocatedTool {
   level: DisplayLevel
   text: string
+}
+export interface Allocation {
+  shown: Map<string, AllocatedTool>
+  spent: number
+  /** Present when minimum-level reservations alone exceed the budget. */
+  reserved?: { cost: number; entries: number }
 }
 export function renderEntry(
   tool: CatalogToolInfo,
@@ -193,7 +208,7 @@ interface Entry {
 export function sectionCost(text: string): number {
   return Math.ceil(text.length / 4)
 }
-function allocate(entries: Entry[], budget: number): Map<string, AllocatedTool> {
+function allocate(entries: Entry[], budget: number): Allocation {
   const shown = new Map<string, AllocatedTool>()
   let nameCount = 0
   let nameChars = 0
@@ -227,7 +242,12 @@ function allocate(entries: Entry[], budget: number): Map<string, AllocatedTool> 
     if (!entry.minimum) continue
     show(entry, entry.minimum)
   }
-  if (remaining < 0) return shown
+  if (remaining < 0)
+    return {
+      shown,
+      spent: budget - remaining,
+      reserved: { cost: budget - remaining, entries: entries.filter((entry) => entry.minimum).length },
+    }
   const priorities = [...new Set(entries.map((entry) => entry.rule?.priority ?? 0))].sort(
     (a, b) => b - a,
   )
@@ -263,7 +283,7 @@ function allocate(entries: Entry[], budget: number): Map<string, AllocatedTool> 
       }
     }
   }
-  return shown
+  return { shown, spent: budget - remaining }
 }
 export function createCatalog(
   description: string,
@@ -304,6 +324,12 @@ export function createCatalog(
     }
   })
   const budget = config.budget === "inherit" ? options.inlineBudget : config.budget
-  const shown = allocate(entries, budget)
-  return assemble(native.prefix, tools, shown)
+  const allocation = allocate(entries, budget)
+  const notice = [...allocation.shown.values()].some((entry) => entry.level === "hint")
+  if (allocation.reserved && !config.exposeAllActiveTools)
+    reportDiagnostic(
+      `codemode catalog: ${allocation.reserved.entries} minimum-level entries need ${allocation.reserved.cost} tokens but the budget is ${budget}; raise codemode.inlineBudget or the catalog "budget".`,
+      "warning",
+    )
+  return assemble(stripOwnNotice(native.prefix), tools, allocation.shown, notice)
 }

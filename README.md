@@ -267,6 +267,26 @@ The remaining budget is spent from the highest priority to the lowest. Each prio
 
 Each stage respects `maxLevel`. Within a stage, namespaces take turns (round-robin), and each namespace tries its cheapest remaining upgrade first.
 
+### 3. Announce abridged entries
+
+When an entry stops at `hint`, the catalog gains one line directly before `Nested tools:`:
+
+```text
+Abridged entries: call `describeTool(name)` before use.
+```
+
+It costs about 15 tokens and is omitted whenever every listed tool has a full declaration. `name` entries need no extra line because their compact list header already explains how to inspect them. Like `Nested tools:` and namespace headings, the line is preamble: it is not charged to the entry budget.
+
+### Over-budget guarantees
+
+When `minLevel` guarantees alone exceed the budget, the extension reports one warning per session:
+
+```text
+codemode catalog: 7 minimum-level entries need 1321 tokens but the budget is 800; raise codemode.inlineBudget or the catalog "budget".
+```
+
+`exposeAllActiveTools` is exempt from the warning because it is documented to exceed the budget.
+
 ## License
 
 MIT
