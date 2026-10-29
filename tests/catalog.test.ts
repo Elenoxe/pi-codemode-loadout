@@ -95,7 +95,7 @@ test("minimum Hint uses valid content; missing content reports and becomes minim
         [item],
       ).sections
       expect(sections.get(item.name)).toBe(toolHeading(item.name))
-      expect(errors).toEqual([
+      expect(errors.filter((message) => message.startsWith("Tool "))).toEqual([
         'Tool search: minLevel "hint" has no non-empty hint or promptSnippet; using minimum Name',
       ])
       const expanded = readCatalog(
@@ -924,4 +924,69 @@ test("failed Name allocation still permits direct Hint or Full allocation", () =
     expect(readCatalog(result, [item]).sections.get(item.name)).toBe(expected)
     expect(result).not.toContain(NAME_LIST_HEADER)
   }
+})
+
+const ABRIDGED_NOTICE = "Abridged entries: call `describeTool(name)` before use."
+const catalog = (items: ToolInfo[], config: Partial<typeof DEFAULT_CONFIG>) =>
+  createCatalog(
+    native(items),
+    { ...DEFAULT_CONFIG, ...config },
+    { ...options(items), reportDiagnostic: () => {} },
+  )
+
+test("abridged Hints are announced exactly once before Nested tools", () => {
+  const items = [tool("alpha"), tool("bravo")]
+  const budget = sectionCost(renderEntry(items[0]!, "hint")) + 2
+  const result = catalog(items, { budget })
+  expect(result.split(ABRIDGED_NOTICE)).toHaveLength(2)
+  expect(result.indexOf(ABRIDGED_NOTICE)).toBeLessThan(result.indexOf("Nested tools:"))
+  const sections = readCatalog(result, items).sections
+  expect(sections.get("alpha")).toBe(renderEntry(items[0]!, "hint"))
+  expect(sections.get("bravo")).toBeUndefined()
+})
+
+test("notice is omitted when every entry is Full or a bare Name", () => {
+  const items = [tool("alpha"), tool("beta")]
+  expect(catalog(items, { budget: 10000 })).not.toContain(ABRIDGED_NOTICE)
+  const names = catalog(items, {
+    budget: 1000,
+    rules: [{ match: ["alpha", "beta"], minLevel: "name", maxLevel: "name" }],
+  })
+  expect(names).toContain(NAME_LIST_HEADER)
+  expect(names).not.toContain(ABRIDGED_NOTICE)
+})
+
+test("a notice already present in the prefix is never duplicated", () => {
+  const items = [tool("alpha"), tool("bravo")]
+  const budget = sectionCost(renderEntry(items[0]!, "hint")) + 2
+  const replayed = native(items).replace(
+    "\n\nNested tools:",
+    "\n\n" + ABRIDGED_NOTICE + "\n\nNested tools:",
+  )
+  const result = createCatalog(replayed, { ...DEFAULT_CONFIG, budget }, options(items))
+  expect(result.split(ABRIDGED_NOTICE)).toHaveLength(2)
+  expect(result).toBe(catalog(items, { budget }))
+})
+
+test("minimum-level overshoot reports one warning; global guarantees stay silent", () => {
+  const items = [tool("alpha"), tool("beta")]
+  const diagnostics: string[] = []
+  const reportDiagnostic = (message: string, severity: string) =>
+    diagnostics.push(`${severity}: ${message}`)
+  createCatalog(
+    native(items),
+    { ...DEFAULT_CONFIG, budget: 0, rules: [{ match: ["alpha", "beta"], minLevel: "full" }] },
+    { ...options(items), reportDiagnostic },
+  )
+  expect(diagnostics).toHaveLength(1)
+  expect(diagnostics[0]).toMatch(
+    /^warning: codemode catalog: 2 minimum-level entries need \d+ tokens but the budget is 0;/,
+  )
+  diagnostics.length = 0
+  createCatalog(
+    native(items),
+    { ...DEFAULT_CONFIG, budget: 0, exposeAllActiveTools: true },
+    { ...options(items), reportDiagnostic },
+  )
+  expect(diagnostics).toEqual([])
 })

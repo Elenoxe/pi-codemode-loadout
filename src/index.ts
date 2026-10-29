@@ -64,7 +64,7 @@ type ConfigState =
 
 export default function codemodeToolCatalog(pi: ExtensionAPI): void {
   let configState: ConfigState = { status: "unloaded" }
-  const reportedHintErrors = new Set<string>()
+  const reportedDiagnostics = new Set<string>()
   const load = (ctx: ExtensionContext) => {
     configState = { status: "invalid" }
     const config = loadConfig(getAgentDir(), ctx.cwd, ctx.isProjectTrusted(), (message, severity) =>
@@ -73,7 +73,7 @@ export default function codemodeToolCatalog(pi: ExtensionAPI): void {
     configState = { status: "ready", config }
   }
   pi.on("session_start", (_event, ctx) => {
-    reportedHintErrors.clear()
+    reportedDiagnostics.clear()
     load(ctx)
   })
   pi.on("context_with_system", (event, ctx) => {
@@ -94,8 +94,8 @@ export default function codemodeToolCatalog(pi: ExtensionAPI): void {
           mode: settings?.mode === "only" ? "only" : "on",
           inlineBudget: Value.Check(Type.Number({ minimum: 0 }), budget) ? budget : 3000,
           reportDiagnostic: (message, severity) => {
-            if (reportedHintErrors.has(message)) return
-            reportedHintErrors.add(message)
+            if (reportedDiagnostics.has(message)) return
+            reportedDiagnostics.add(message)
             reportDiagnostic(message, severity, ctx)
           },
         }),
